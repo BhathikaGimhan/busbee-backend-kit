@@ -1,0 +1,28 @@
+### Register a new user
+POST http://localhost:3000/auth/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123",
+  "displayName": "Test User"
+}
+
+###
+
+### Login
+POST http://localhost:3000/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "password123"
+}
+
+###
+
+### Get Profile (Replace YOUR_TOKEN with the token from login response)
+GET http://localhost:3000/auth/profile
+Authorization: Bearer YOUR_TOKEN
+
+###
