@@ -2,7 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { FirebaseService } from '../firebase/firebase.service';
 import { LoginDto } from './dto/login.dto';
-import { RegisterDto } from './dto/register.dto';
+import { RegisterDto, UserType, BusStatus } from './dto/register.dto';
 import * as admin from 'firebase-admin';
 
 @Injectable()
@@ -14,8 +14,14 @@ export class AuthService {
 
   async register(registerDto: RegisterDto) {
     try {
-      const { email, password, displayName } = registerDto;
-      console.log('📝 Registering user:', email);
+      const {
+        email,
+        password,
+        displayName,
+        userType = UserType.PASSENGER,
+        busDetails,
+      } = registerDto;
+      console.log('📝 Registering user:', email, 'as', userType);
 
       // Create user in Firebase
       console.log('🔧 Creating user in Firebase Auth...');
@@ -26,18 +32,28 @@ export class AuthService {
       );
       console.log('✅ User created in Firebase Auth:', userRecord.uid);
 
-      // Store additional user data in Firestore
+      // Prepare user data for Firestore
+      const userData: any = {
+        email: userRecord.email,
+        displayName: displayName || '',
+        userType: userType,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+
+      // If user is a driver and provided bus details, add them
+      if (userType === UserType.DRIVER && busDetails) {
+        userData.busDetails = {
+          ...busDetails,
+          status: BusStatus.PENDING,
+          submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        console.log('🚌 Adding bus details for driver registration');
+      }
+
+      // Store user data in Firestore
       console.log('💾 Storing user data in Firestore...');
       const firestore = this.firebaseService.getFirestore();
-      await firestore
-        .collection('users')
-        .doc(userRecord.uid)
-        .set({
-          email: userRecord.email,
-          displayName: displayName || '',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          role: 'passenger', // Default role
-        });
+      await firestore.collection('users').doc(userRecord.uid).set(userData);
       console.log('✅ User data stored in Firestore');
 
       // Generate JWT token
@@ -51,6 +67,14 @@ export class AuthService {
           uid: userRecord.uid,
           email: userRecord.email,
           displayName: userRecord.displayName,
+          userType: userType,
+          ...(userType === UserType.DRIVER &&
+            busDetails && {
+              busDetails: {
+                ...busDetails,
+                status: BusStatus.PENDING,
+              },
+            }),
         },
       };
     } catch (error) {
@@ -88,6 +112,8 @@ export class AuthService {
           uid: authResult.localId,
           email: authResult.email,
           displayName: userData?.displayName || authResult.displayName || '',
+          userType: userData?.userType || UserType.PASSENGER,
+          ...(userData?.busDetails && { busDetails: userData.busDetails }),
         },
       };
     } catch {

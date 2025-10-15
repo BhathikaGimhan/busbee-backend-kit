@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { FirebaseService } from './firebase.service';
 import * as admin from 'firebase-admin';
 
 @Module({
   imports: [ConfigModule],
   providers: [
+    FirebaseService,
     {
       provide: 'FIREBASE_APP',
       useFactory: () => {
@@ -110,6 +112,6 @@ import * as admin from 'firebase-admin';
       },
     },
   ],
-  exports: ['FIREBASE_APP'],
+  exports: ['FIREBASE_APP', FirebaseService],
 })
 export class FirebaseModule {}
