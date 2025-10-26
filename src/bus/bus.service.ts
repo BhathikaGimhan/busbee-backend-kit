@@ -101,4 +101,56 @@ export class BusService {
 
     return approvedBuses;
   }
+
+  async searchBuses(searchCriteria: {
+    from?: string;
+    to?: string;
+    date?: string;
+  }) {
+    const firestore = this.firebaseService.getFirestore();
+    const usersRef = firestore.collection('users');
+
+    const query = usersRef
+      .where('userType', '==', 'driver')
+      .where('busDetails.status', '==', BusStatus.APPROVED);
+
+    const snapshot = await query.get();
+
+    const matchingBuses = [];
+    snapshot.forEach((doc) => {
+      const userData = doc.data();
+      if (userData.busDetails && userData.busDetails.route) {
+        const route = userData.busDetails.route.toLowerCase();
+        const fromMatch =
+          !searchCriteria.from ||
+          route.includes(searchCriteria.from.toLowerCase());
+        const toMatch =
+          !searchCriteria.to ||
+          route.includes(searchCriteria.to.toLowerCase());
+
+        if (fromMatch && toMatch) {
+          matchingBuses.push({
+            id: doc.id,
+            busName: userData.busDetails.busName,
+            busNumber: userData.busDetails.busNumber,
+            route: userData.busDetails.route,
+            numberOfSeats: userData.busDetails.numberOfSeats,
+            busType: userData.busDetails.busType,
+            driverName: userData.displayName,
+            driverEmail: userData.email,
+            // Mock additional data for now - in real app, this would come from bus schedules
+            departureTime: '08:30 AM', // This should come from schedule data
+            arrivalTime: '12:45 PM', // This should come from schedule data
+            duration: '4h 15m', // This should be calculated
+            price: 850, // This should come from pricing data
+            availableSeats: Math.floor(
+              Math.random() * userData.busDetails.numberOfSeats,
+            ), // Mock available seats
+          });
+        }
+      }
+    });
+
+    return matchingBuses;
+  }
 }
