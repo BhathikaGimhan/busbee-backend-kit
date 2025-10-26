@@ -102,6 +102,208 @@ export class BusService {
     return approvedBuses;
   }
 
+  async bookSeats(bookingData: {
+    userId: string;
+    busId: string;
+    seats: Array<{
+      seatId: string;
+      seatNumber: string;
+      price: number;
+      type: string;
+    }>;
+    totalPrice: number;
+    travelDate: string;
+    route: string;
+  }) {
+    console.log(
+      '📝 Starting seat booking process for user:',
+      bookingData.userId,
+    );
+
+    const firestore = this.firebaseService.getFirestore();
+
+    // Check if seats are available before booking
+    const seatAvailabilityRef = firestore
+      .collection('seatAvailability')
+      .doc(`${bookingData.busId}_${bookingData.travelDate}`);
+    const seatDoc = await seatAvailabilityRef.get();
+
+    if (seatDoc.exists) {
+      const seatData = seatDoc.data();
+      console.log(
+        '🔍 Checking seat availability for',
+        bookingData.seats.length,
+        'seats',
+      );
+
+      for (const seat of bookingData.seats) {
+        if (seatData?.seats?.[seat.seatId]?.status === 'booked') {
+          console.log('❌ Seat already booked:', seat.seatNumber);
+          throw new Error(`Seat ${seat.seatNumber} is no longer available`);
+        }
+      }
+    }
+
+    // Create booking record
+    const bookingRef = firestore.collection('bookings').doc();
+    const bookingId = bookingRef.id;
+
+    const booking = {
+      id: bookingId,
+      userId: bookingData.userId,
+      busId: bookingData.busId,
+      seats: bookingData.seats,
+      totalPrice: bookingData.totalPrice,
+      travelDate: bookingData.travelDate,
+      route: bookingData.route,
+      status: 'confirmed',
+      bookedAt: new Date(),
+      paymentStatus: 'pending',
+    };
+
+    console.log('🔄 Starting Firestore transaction for booking:', bookingId);
+
+    // Use transaction to ensure atomic seat booking
+    await firestore
+      .runTransaction(async (transaction) => {
+        console.log('📊 Updating seat availability...');
+
+        try {
+          // FIRST: Read the user document to check if it exists
+          console.log('👤 Checking user document...');
+          const userRef = firestore.collection('users').doc(bookingData.userId);
+          const userDoc = await transaction.get(userRef);
+
+          // Prepare all the writes
+          const seatUpdate = {};
+          bookingData.seats.forEach((seat) => {
+            seatUpdate[`seats.${seat.seatId}`] = {
+              seatNumber: seat.seatNumber,
+              status: 'booked',
+              bookedBy: bookingData.userId,
+              bookedAt: new Date(),
+              price: seat.price,
+              type: seat.type,
+            };
+          });
+
+          // NOW: Execute all writes
+          transaction.set(
+            seatAvailabilityRef,
+            {
+              busId: bookingData.busId,
+              travelDate: bookingData.travelDate,
+              route: bookingData.route,
+              lastUpdated: new Date(),
+              ...seatUpdate,
+            },
+            { merge: true },
+          );
+
+          console.log('📋 Creating booking record...');
+          // Create booking record
+          transaction.set(bookingRef, booking);
+
+          console.log('👤 Updating user bookings...');
+          // Update user's bookings
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            const existingBookings = userData?.bookings || [];
+            existingBookings.push(bookingId);
+
+            transaction.update(userRef, {
+              bookings: existingBookings,
+            });
+            console.log('✅ User bookings updated');
+          } else {
+            console.log('❌ User document not found, creating it...');
+            // Create user document if it doesn't exist
+            transaction.set(userRef, {
+              uid: bookingData.userId,
+              email: '', // We don't have email here, but this should be set during registration
+              displayName: '',
+              userType: 'passenger',
+              bookings: [bookingId],
+              createdAt: new Date(),
+            });
+            console.log('✅ User document created with booking');
+          }
+        } catch (transactionError) {
+          console.error('❌ Transaction error:', transactionError);
+          throw transactionError;
+        }
+      })
+      .catch((error) => {
+        console.error('❌ Transaction failed:', error);
+        throw error;
+      });
+
+    console.log('🎉 Booking completed successfully:', bookingId);
+    return {
+      bookingId,
+      message: 'Seats booked successfully',
+      booking,
+    };
+  }
+
+  async getSeatAvailability(busId: string, travelDate: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const seatAvailabilityRef = firestore
+      .collection('seatAvailability')
+      .doc(`${busId}_${travelDate}`);
+
+    const seatDoc = await seatAvailabilityRef.get();
+
+    if (!seatDoc.exists) {
+      // Return default seat layout if no bookings exist yet
+      return this.generateDefaultSeats(busId, travelDate);
+    }
+
+    return seatDoc.data();
+  }
+
+  private generateDefaultSeats(busId: string, travelDate: string) {
+    // Get bus details to know total seats
+    // For now, return a default layout - in real app, this would come from bus configuration
+    const defaultSeats = {};
+    const totalSeats = 54; // This should come from bus data
+    const seatsPerRow = 4;
+    const rows = Math.ceil(totalSeats / seatsPerRow);
+
+    for (let row = 1; row <= rows; row++) {
+      for (let seat = 1; seat <= seatsPerRow; seat++) {
+        const seatNumber = `${row}${String.fromCharCode(64 + seat)}`;
+        const seatId = `seat-${row}-${seat}`;
+
+        let seatType: 'regular' | 'premium' | 'wheelchair' = 'regular';
+        let price = 850; // Base price
+
+        if (row === 1) {
+          seatType = 'premium';
+          price = Math.round(850 * 1.2); // 20% more for front row
+        } else if (seat === 1 && row % 3 === 0) {
+          // Every 3rd row, first seat is wheelchair
+          seatType = 'wheelchair';
+          price = 850; // Same price for wheelchair
+        }
+
+        defaultSeats[seatId] = {
+          seatNumber,
+          status: 'available',
+          price,
+          type: seatType,
+        };
+      }
+    }
+
+    return {
+      busId,
+      travelDate,
+      seats: defaultSeats,
+      lastUpdated: new Date(),
+    };
+  }
+
   async searchBuses(searchCriteria: {
     from?: string;
     to?: string;
@@ -125,8 +327,7 @@ export class BusService {
           !searchCriteria.from ||
           route.includes(searchCriteria.from.toLowerCase());
         const toMatch =
-          !searchCriteria.to ||
-          route.includes(searchCriteria.to.toLowerCase());
+          !searchCriteria.to || route.includes(searchCriteria.to.toLowerCase());
 
         if (fromMatch && toMatch) {
           matchingBuses.push({
