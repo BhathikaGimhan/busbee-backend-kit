@@ -7,6 +7,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Query,
 } from '@nestjs/common';
 import { BusService } from './bus.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -39,5 +40,14 @@ export class BusController {
   @Get('approved')
   async getApprovedBuses() {
     return await this.busService.getApprovedBuses();
+  }
+
+  @Get('search')
+  async searchBuses(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('date') date?: string,
+  ) {
+    return await this.busService.searchBuses({ from, to, date });
   }
 }
