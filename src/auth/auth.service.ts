@@ -132,7 +132,8 @@ export class AuthService {
         uid: userRecord.uid,
         email: userRecord.email,
         displayName: userRecord.displayName || userData?.displayName,
-        role: userData?.role || 'passenger',
+        userType: userData?.userType || 'passenger',
+        busDetails: userData?.busDetails,
       };
     } catch {
       return null;
