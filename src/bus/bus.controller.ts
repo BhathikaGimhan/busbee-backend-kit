@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Param,
   Body,
   UseGuards,
@@ -118,5 +119,206 @@ export class BusController {
 
     await seatAvailabilityRef.delete();
     return { message: 'Seat availability cleared successfully' };
+  }
+
+  @Post('trip')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createTrip(@Body() tripData: any, @Req() req: Request) {
+    const authenticatedUser = req.user as { userId: string; email: string };
+
+    // Verify the user owns the bus
+    const firestore = this.firebaseService.getFirestore();
+    const userDoc = await firestore
+      .collection('users')
+      .doc(authenticatedUser.userId)
+      .get();
+
+    if (!userDoc.exists || userDoc.data().userType !== 'driver') {
+      throw new BadRequestException('Only drivers can create trips');
+    }
+
+    return await this.busService.createTrip({
+      ...tripData,
+      busId: authenticatedUser.userId, // Driver's userId is the busId
+    });
+  }
+
+  @Get(':busId/trips')
+  async getBusTrips(
+    @Param('busId') busId: string,
+    @Query('date') date?: string,
+  ) {
+    return await this.busService.getBusTrips(busId, date);
+  }
+
+  @Post('hire-request')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createHireRequest(@Body() requestData: any) {
+    return await this.busService.createHireRequest(requestData);
+  }
+
+  @Get('hire-requests')
+  @UseGuards(JwtAuthGuard)
+  async getHireRequests(
+    @Query('userId') userId: string,
+    @Query('role') role: 'passenger' | 'driver',
+  ) {
+    return await this.busService.getHireRequests(userId, role);
+  }
+
+  @Patch('hire-request/:requestId/status')
+  @UseGuards(JwtAuthGuard)
+  async updateHireRequestStatus(
+    @Param('requestId') requestId: string,
+    @Body()
+    body: {
+      status:
+        | 'price_quoted'
+        | 'price_accepted'
+        | 'confirmed'
+        | 'rejected'
+        | 'completed';
+      finalPrice?: number;
+      driverNotes?: string;
+    },
+  ) {
+    return await this.busService.updateHireRequestStatus(
+      requestId,
+      body.status,
+      body.finalPrice,
+      body.driverNotes,
+    );
+  }
+
+  // Booking management endpoints
+  @Get('bookings/driver/:driverId')
+  @UseGuards(JwtAuthGuard)
+  async getDriverBookings(@Param('driverId') driverId: string) {
+    return await this.busService.getDriverBookings(driverId);
+  }
+
+  @Get('bookings/passenger/:passengerId')
+  @UseGuards(JwtAuthGuard)
+  async getPassengerBookings(@Param('passengerId') passengerId: string) {
+    return await this.busService.getPassengerBookings(passengerId);
+  }
+
+  @Patch('bookings/:bookingId/status')
+  @UseGuards(JwtAuthGuard)
+  async updateBookingStatus(
+    @Param('bookingId') bookingId: string,
+    @Body() body: { status: 'confirmed' | 'cancelled' },
+  ) {
+    return await this.busService.updateBookingStatus(bookingId, body.status);
+  }
+
+  // ==================== ROUTINE MANAGEMENT ENDPOINTS ====================
+
+  @Post('routines')
+  @UseGuards(JwtAuthGuard)
+  async createRoutine(@Body() createRoutineDto: any) {
+    return await this.busService.createRoutine(createRoutineDto);
+  }
+
+  @Get('routines/driver/:driverId')
+  @UseGuards(JwtAuthGuard)
+  async getRoutinesByDriver(@Param('driverId') driverId: string) {
+    return await this.busService.getRoutinesByDriver(driverId);
+  }
+
+  @Get('routines/bus/:busId')
+  async getRoutinesByBus(@Param('busId') busId: string) {
+    return await this.busService.getRoutinesByBus(busId);
+  }
+
+  @Get('routines/pending')
+  @UseGuards(JwtAuthGuard)
+  async getPendingRoutines() {
+    return await this.busService.getPendingRoutines();
+  }
+
+  @Patch('routines/:routineId')
+  @UseGuards(JwtAuthGuard)
+  async updateRoutine(
+    @Param('routineId') routineId: string,
+    @Body() updateData: any,
+  ) {
+    return await this.busService.updateRoutine(routineId, updateData);
+  }
+
+  @Patch('routines/:routineId/status')
+  @UseGuards(JwtAuthGuard)
+  async updateRoutineStatus(
+    @Param('routineId') routineId: string,
+    @Body() body: { status: string; rejectionReason?: string },
+  ) {
+    return await this.busService.updateRoutineStatus(
+      routineId,
+      body.status,
+      body.rejectionReason,
+    );
+  }
+
+  @Delete('routines/:routineId')
+  @UseGuards(JwtAuthGuard)
+  async deleteRoutine(@Param('routineId') routineId: string) {
+    return await this.busService.deleteRoutine(routineId);
+  }
+
+  // ==================== DAILY SCHEDULE ENDPOINTS ====================
+
+  @Get('schedule/today/:driverId')
+  @UseGuards(JwtAuthGuard)
+  async getTodaySchedule(
+    @Param('driverId') driverId: string,
+    @Query('date') date: string,
+  ) {
+    return await this.busService.getTodaySchedule(driverId, date);
+  }
+
+  @Patch('schedule/daily/:routineId')
+  @UseGuards(JwtAuthGuard)
+  async updateDailyRoutineStatus(
+    @Param('routineId') routineId: string,
+    @Body() body: { date: string; availability: string; notes?: string },
+  ) {
+    return await this.busService.updateDailyRoutineStatus(
+      routineId,
+      body.date,
+      body.availability,
+      body.notes,
+    );
+  }
+
+  // ==================== SEARCH WITH SCHEDULES ====================
+
+  @Get('search/schedules')
+  async searchBusesWithSchedules(
+    @Query('route') route: string,
+    @Query('date') date: string,
+  ) {
+    if (!route || !date) {
+      throw new BadRequestException('Route and date are required');
+    }
+    return await this.busService.searchBusesWithSchedules(route, date);
+  }
+
+  // ==================== BUS PRICING ENDPOINTS ====================
+
+  @Patch('pricing/:driverId')
+  @UseGuards(JwtAuthGuard)
+  async updateBusPricing(
+    @Param('driverId') driverId: string,
+    @Body() pricingData: any,
+  ) {
+    return await this.busService.updateBusPricing(driverId, pricingData);
+  }
+
+  @Get('pricing/:driverId')
+  @UseGuards(JwtAuthGuard)
+  async getBusPricing(@Param('driverId') driverId: string) {
+    return await this.busService.getBusPricing(driverId);
   }
 }
