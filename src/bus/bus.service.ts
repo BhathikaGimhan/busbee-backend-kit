@@ -745,45 +745,104 @@ export class BusService {
       throw new NotFoundException('Driver not found');
     }
 
-    const userData = userDoc.data();
-    const busId = userData?.busDetails?.busId;
-
-    if (!busId) {
-      return [];
-    }
+    // Use driverId directly as busId since that's how the system works
+    const busId = driverId;
 
     // Get all bookings for this bus
     const bookingsRef = firestore.collection('bookings');
-    const snapshot = await bookingsRef
-      .where('busId', '==', busId)
-      .orderBy('bookingDate', 'desc')
-      .get();
 
-    const bookings = [];
-    for (const doc of snapshot.docs) {
-      const bookingData = doc.data();
-
-      // Get passenger details
-      const passengerDoc = await firestore
-        .collection('users')
-        .doc(bookingData.passengerId)
+    try {
+      const snapshot = await bookingsRef
+        .where('busId', '==', busId)
+        .orderBy('bookedAt', 'desc')
         .get();
-      const passengerData = passengerDoc.data();
 
-      bookings.push({
-        id: doc.id,
-        ...bookingData,
-        passengerName: passengerData?.displayName || 'Unknown',
-        passengerEmail: passengerData?.email || '',
-        passengerPhone: passengerData?.phoneNumber || '',
-        bookingDate:
-          bookingData.bookingDate?.toDate?.() || bookingData.bookingDate,
-        travelDate:
-          bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+      const bookings = [];
+      for (const doc of snapshot.docs) {
+        const bookingData = doc.data();
+
+        // Get passenger details
+        const passengerDoc = await firestore
+          .collection('users')
+          .doc(bookingData.userId)
+          .get();
+        const passengerData = passengerDoc.data();
+
+        bookings.push({
+          id: doc.id,
+          ...bookingData,
+          passengerName: passengerData?.displayName || 'Unknown',
+          passengerEmail: passengerData?.email || '',
+          passengerPhone: passengerData?.phoneNumber || '',
+          // Transform data for frontend
+          seatsBooked: bookingData.seats?.length || 0,
+          totalAmount: bookingData.totalPrice || 0,
+          // Parse route to extract from and to locations
+          from: bookingData.route
+            ? bookingData.route.split(' to ')[0]?.trim() || ''
+            : '',
+          to: bookingData.route
+            ? bookingData.route.split(' to ')[1]?.trim() || ''
+            : '',
+          bookingDate: bookingData.bookedAt?.toDate?.() || bookingData.bookedAt,
+          bookedAt: bookingData.bookedAt?.toDate?.() || bookingData.bookedAt,
+          travelDate:
+            bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+        });
+      }
+
+      return bookings;
+    } catch (error) {
+      // If index doesn't exist, fetch without orderBy
+      console.warn(
+        'Firestore index not found for driver bookings query, fetching without ordering:',
+        error.message,
+      );
+      const snapshot = await bookingsRef.where('busId', '==', busId).get();
+
+      const bookings = [];
+      for (const doc of snapshot.docs) {
+        const bookingData = doc.data();
+
+        // Get passenger details
+        const passengerDoc = await firestore
+          .collection('users')
+          .doc(bookingData.userId)
+          .get();
+        const passengerData = passengerDoc.data();
+
+        bookings.push({
+          id: doc.id,
+          ...bookingData,
+          passengerName: passengerData?.displayName || 'Unknown',
+          passengerEmail: passengerData?.email || '',
+          passengerPhone: passengerData?.phoneNumber || '',
+          // Transform data for frontend
+          seatsBooked: bookingData.seats?.length || 0,
+          totalAmount: bookingData.totalPrice || 0,
+          // Parse route to extract from and to locations
+          from: bookingData.route
+            ? bookingData.route.split(' to ')[0]?.trim() || ''
+            : '',
+          to: bookingData.route
+            ? bookingData.route.split(' to ')[1]?.trim() || ''
+            : '',
+          bookingDate: bookingData.bookedAt?.toDate?.() || bookingData.bookedAt,
+          bookedAt: bookingData.bookedAt?.toDate?.() || bookingData.bookedAt,
+          travelDate:
+            bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+        });
+      }
+
+      // Sort in memory by bookedAt (most recent first)
+      bookings.sort((a, b) => {
+        const aTime = a.bookedAt?.seconds || a.bookedAt || 0;
+        const bTime = b.bookedAt?.seconds || b.bookedAt || 0;
+        return bTime - aTime;
       });
-    }
 
-    return bookings;
+      return bookings;
+    }
   }
 
   async getPassengerBookings(passengerId: string) {
