@@ -106,6 +106,31 @@ export class BusService {
     return approvedBuses;
   }
 
+  async getRejectedBuses() {
+    const firestore = this.firebaseService.getFirestore();
+    const usersRef = firestore.collection('users');
+
+    const snapshot = await usersRef
+      .where('userType', '==', 'driver')
+      .where('busDetails.status', '==', BusStatus.REJECTED)
+      .get();
+
+    const rejectedBuses = [];
+    snapshot.forEach((doc) => {
+      const userData = doc.data();
+      if (userData.busDetails) {
+        rejectedBuses.push({
+          userId: doc.id,
+          userEmail: userData.email,
+          userDisplayName: userData.displayName,
+          busDetails: userData.busDetails,
+        });
+      }
+    });
+
+    return rejectedBuses;
+  }
+
   async bookSeats(bookingData: {
     userId: string;
     busId: string;
@@ -417,11 +442,64 @@ export class BusService {
       const userData = doc.data();
       if (userData.busDetails && userData.busDetails.route) {
         const route = userData.busDetails.route.toLowerCase();
-        const fromMatch =
-          !searchCriteria.from ||
-          route.includes(searchCriteria.from.toLowerCase());
-        const toMatch =
-          !searchCriteria.to || route.includes(searchCriteria.to.toLowerCase());
+
+        // Parse route to extract from and to locations
+        const separators = [' to ', ' - ', ' → ', ' -> ', ' | '];
+        let routeFrom = '';
+        let routeTo = '';
+
+        for (const separator of separators) {
+          if (route.includes(separator)) {
+            const parts = route.split(separator);
+            if (parts.length >= 2) {
+              routeFrom = parts[0].trim();
+              routeTo = parts[1].trim();
+              break;
+            }
+          }
+        }
+
+        // If we couldn't parse with separators, check if it's a single location
+        if (!routeFrom && !routeTo) {
+          routeFrom = route.trim();
+        }
+
+        // Enhanced matching logic
+        let fromMatch = true;
+        let toMatch = true;
+
+        if (searchCriteria.from) {
+          const searchFrom = searchCriteria.from.toLowerCase();
+          fromMatch =
+            routeFrom.toLowerCase().includes(searchFrom) ||
+            routeTo.toLowerCase().includes(searchFrom) ||
+            route.includes(searchFrom);
+        }
+
+        if (searchCriteria.to) {
+          const searchTo = searchCriteria.to.toLowerCase();
+          toMatch =
+            routeTo.toLowerCase().includes(searchTo) ||
+            routeFrom.toLowerCase().includes(searchTo) ||
+            route.includes(searchTo);
+        }
+
+        // For single location searches, match either from or to
+        if (searchCriteria.from && !searchCriteria.to) {
+          fromMatch =
+            routeFrom
+              .toLowerCase()
+              .includes(searchCriteria.from.toLowerCase()) ||
+            routeTo.toLowerCase().includes(searchCriteria.from.toLowerCase()) ||
+            route.includes(searchCriteria.from.toLowerCase());
+          toMatch = true;
+        } else if (!searchCriteria.from && searchCriteria.to) {
+          toMatch =
+            routeTo.toLowerCase().includes(searchCriteria.to.toLowerCase()) ||
+            routeFrom.toLowerCase().includes(searchCriteria.to.toLowerCase()) ||
+            route.includes(searchCriteria.to.toLowerCase());
+          fromMatch = true;
+        }
 
         if (fromMatch && toMatch) {
           const busData = {
@@ -658,11 +736,11 @@ export class BusService {
   // Booking management methods
   async getDriverBookings(driverId: string) {
     const firestore = this.firebaseService.getFirestore();
-    
+
     // Get driver's buses
     const usersRef = firestore.collection('users').doc(driverId);
     const userDoc = await usersRef.get();
-    
+
     if (!userDoc.exists) {
       throw new NotFoundException('Driver not found');
     }
@@ -684,7 +762,7 @@ export class BusService {
     const bookings = [];
     for (const doc of snapshot.docs) {
       const bookingData = doc.data();
-      
+
       // Get passenger details
       const passengerDoc = await firestore
         .collection('users')
@@ -712,25 +790,56 @@ export class BusService {
     const firestore = this.firebaseService.getFirestore();
     const bookingsRef = firestore.collection('bookings');
 
-    const snapshot = await bookingsRef
-      .where('passengerId', '==', passengerId)
-      .orderBy('bookingDate', 'desc')
-      .get();
+    try {
+      const snapshot = await bookingsRef
+        .where('userId', '==', passengerId)
+        .orderBy('bookedAt', 'desc')
+        .get();
 
-    const bookings = [];
-    snapshot.forEach((doc) => {
-      const bookingData = doc.data();
-      bookings.push({
-        id: doc.id,
-        ...bookingData,
-        bookingDate:
-          bookingData.bookingDate?.toDate?.() || bookingData.bookingDate,
-        travelDate:
-          bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+      const bookings = [];
+      snapshot.forEach((doc) => {
+        const bookingData = doc.data();
+        bookings.push({
+          id: doc.id,
+          ...bookingData,
+          bookedAt: bookingData.bookedAt?.toDate?.() || bookingData.bookedAt,
+          travelDate:
+            bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+        });
       });
-    });
 
-    return bookings;
+      return bookings;
+    } catch (error) {
+      // If index doesn't exist, fetch without orderBy
+      console.warn(
+        'Firestore index not found for bookings query, fetching without ordering:',
+        error.message,
+      );
+      const snapshot = await bookingsRef
+        .where('userId', '==', passengerId)
+        .get();
+
+      const bookings = [];
+      snapshot.forEach((doc) => {
+        const bookingData = doc.data();
+        bookings.push({
+          id: doc.id,
+          ...bookingData,
+          bookedAt: bookingData.bookedAt?.toDate?.() || bookingData.bookedAt,
+          travelDate:
+            bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+        });
+      });
+
+      // Sort in memory by bookedAt (most recent first)
+      bookings.sort((a, b) => {
+        const aTime = a.bookedAt?.seconds || a.bookedAt || 0;
+        const bTime = b.bookedAt?.seconds || b.bookedAt || 0;
+        return bTime - aTime;
+      });
+
+      return bookings;
+    }
   }
 
   async updateBookingStatus(
@@ -1031,7 +1140,7 @@ export class BusService {
       const dailyStatusRef = firestore
         .collection('dailySchedules')
         .doc(`${routine.id}_${date}`);
-      
+
       const dailyDoc = await dailyStatusRef.get();
       const dailyStatus = dailyDoc.exists ? dailyDoc.data() : null;
 
@@ -1208,5 +1317,520 @@ export class BusService {
 
     return pricing;
   }
-}
 
+  // ==================== LOCATION SUGGESTIONS ====================
+
+  async getLocationSuggestions() {
+    const firestore = this.firebaseService.getFirestore();
+    const usersRef = firestore.collection('users');
+
+    const snapshot = await usersRef
+      .where('userType', '==', 'driver')
+      .where('busDetails.status', '==', BusStatus.APPROVED)
+      .get();
+
+    const locations = new Set<string>();
+
+    snapshot.forEach((doc) => {
+      const userData = doc.data();
+      if (userData.busDetails && userData.busDetails.route) {
+        const route = userData.busDetails.route;
+
+        // Extract locations from route strings like "Colombo to Kandy", "Colombo - Kandy", "Colombo → Kandy"
+        const separators = [' to ', ' - ', ' → ', ' -> ', ' | '];
+        let fromLocation = '';
+        let toLocation = '';
+
+        for (const separator of separators) {
+          if (route.includes(separator)) {
+            const parts = route.split(separator);
+            if (parts.length >= 2) {
+              fromLocation = parts[0].trim();
+              toLocation = parts[1].trim();
+              break;
+            }
+          }
+        }
+
+        // If we couldn't parse with separators, try to extract common city names
+        if (!fromLocation || !toLocation) {
+          const commonCities = [
+            'Colombo',
+            'Kandy',
+            'Galle',
+            'Matara',
+            'Jaffna',
+            'Anuradhapura',
+            'Polonnaruwa',
+            'Sigiriya',
+            'Dambulla',
+            'Negombo',
+            'Kalutara',
+            'Beruwala',
+            'Bentota',
+            'Hikkaduwa',
+            'Unawatuna',
+            'Trincomalee',
+            'Batticaloa',
+            'Ampara',
+            'Hambantota',
+            'Tangalle',
+            'Mirissa',
+            'Weligama',
+            'Ahangama',
+            'Induruwa',
+            'Aluthgama',
+            'Kosgoda',
+            'Balapitiya',
+            'Ambalangoda',
+            'Elpitiya',
+            'Baddegama',
+            'Rathgama',
+            'Katukurunda',
+            'Wadduwa',
+            'Molligoda',
+            'Moratuwa',
+            'Panadura',
+            'Horana',
+            'Ingiriya',
+            'Wathupitiwala',
+            'Avissawella',
+            'Ruwanwella',
+            'Nittambuwa',
+            'Gampaha',
+            'Veyangoda',
+            'Minuwangoda',
+            'Ja-Ela',
+            'Katunayake',
+            'Seeduwa',
+            'Negombo',
+            'Kochchikade',
+            'Peliyagoda',
+            'Maharagama',
+            'Kesbewa',
+            'Boralesgamuwa',
+            'Piliyandala',
+            'Dehiwala',
+            'Mount Lavinia',
+            'Ratmalana',
+            'Moratuwa',
+            'Angulana',
+            'Meegoda',
+            'Homagama',
+            'Godagama',
+            'Battaramulla',
+            'Kottawa',
+            'Malabe',
+            'Kaduwela',
+            'Kothalawala',
+            'Rajagiriya',
+            'Battaramulla',
+            'Nugegoda',
+            'Kirulapone',
+            'Narahenpita',
+            'Havelock Town',
+            'Bambalapitiya',
+            'Wellawatta',
+            'Dehiwala',
+            'Mount Lavinia',
+            'Ratmalana',
+            'Moratuwa',
+            'Angulana',
+            'Meegoda',
+            'Homagama',
+            'Godagama',
+            'Battaramulla',
+            'Kottawa',
+            'Malabe',
+            'Kaduwela',
+            'Kothalawala',
+            'Rajagiriya',
+            'Battaramulla',
+            'Nugegoda',
+            'Kirulapone',
+            'Narahenpita',
+            'Havelock Town',
+            'Bambalapitiya',
+            'Wellawatta',
+            'Slave Island',
+            'Fort',
+            'Pettah',
+            'Grandpass',
+            'Modara',
+            'Mattakkuliya',
+            'Madampitiya',
+            'Demata',
+            'Kelaniya',
+            'Wattala',
+            'Ragama',
+            'Kadawatha',
+            'Kiribathgoda',
+            'Pannipitiya',
+            'Thalawathugoda',
+            'Koswatte',
+            'Nawala',
+            'Wijerama',
+            'Kohuwala',
+            'Ethul Kotte',
+            'Sri Jayawardenepura Kotte',
+            'Pitakotte',
+            'Gangodawila',
+            'Nugegoda',
+            'Kirulapone',
+            'Narahenpita',
+            'Havelock Town',
+            'Bambalapitiya',
+            'Wellawatta',
+            'Slave Island',
+            'Fort',
+            'Pettah',
+            'Grandpass',
+            'Modara',
+            'Mattakkuliya',
+            'Madampitiya',
+            'Demata',
+            'Kelaniya',
+            'Wattala',
+            'Ragama',
+            'Kadawatha',
+            'Kiribathgoda',
+            'Pannipitiya',
+            'Thalawathugoda',
+            'Koswatte',
+            'Nawala',
+            'Wijerama',
+            'Kohuwala',
+            'Ethul Kotte',
+            'Sri Jayawardenepura Kotte',
+            'Pitakotte',
+            'Gangodawila',
+            ' Mulleriyawa',
+            'New Town',
+            'Udahamulla',
+            'Welikada',
+            'Angoda',
+            'Athurugiriya',
+            'Kahanthota',
+            'Kottawa',
+            'Malabe',
+            'Kaduwela',
+            'Kothalawala',
+            'Rajagiriya',
+            'Battaramulla',
+            'Nugegoda',
+            'Kirulapone',
+            'Narahenpita',
+            'Havelock Town',
+            'Bambalapitiya',
+            'Wellawatta',
+            'Slave Island',
+            'Fort',
+            'Pettah',
+            'Grandpass',
+            'Modara',
+            'Mattakkuliya',
+            'Madampitiya',
+            'Demata',
+            'Kelaniya',
+            'Wattala',
+            'Ragama',
+            'Kadawatha',
+            'Kiribathgoda',
+            'Pannipitiya',
+            'Thalawathugoda',
+            'Koswatte',
+            'Nawala',
+            'Wijerama',
+            'Kohuwala',
+            'Ethul Kotte',
+            'Sri Jayawardenepura Kotte',
+            'Pitakotte',
+            'Gangodawila',
+            ' Mulleriyawa',
+            'New Town',
+            'Udahamulla',
+            'Welikada',
+            'Angoda',
+            'Athurugiriya',
+            'Kahanthota',
+            'Kottawa',
+            'Malabe',
+            'Kaduwela',
+            'Kothalawala',
+            'Rajagiriya',
+            'Battaramulla',
+            'Nugegoda',
+            'Kirulapone',
+            'Narahenpita',
+            'Havelock Town',
+            'Bambalapitiya',
+            'Wellawatta',
+            'Slave Island',
+            'Fort',
+            'Pettah',
+            'Grandpass',
+            'Modara',
+            'Mattakkuliya',
+            'Madampitiya',
+            'Demata',
+            'Kelaniya',
+            'Wattala',
+            'Ragama',
+            'Kadawatha',
+            'Kiribathgoda',
+            'Pannipitiya',
+            'Thalawathugoda',
+            'Koswatte',
+            'Nawala',
+            'Wijerama',
+            'Kohuwala',
+            'Ethul Kotte',
+            'Sri Jayawardenepura Kotte',
+            'Pitakotte',
+            'Gangodawila',
+            ' Mulleriyawa',
+            'New Town',
+            'Udahamulla',
+            'Welikada',
+            'Angoda',
+            'Athurugiriya',
+            'Kahanthota',
+          ];
+
+          for (const city of commonCities) {
+            if (route.toLowerCase().includes(city.toLowerCase())) {
+              locations.add(city);
+            }
+          }
+        } else {
+          // Add the parsed locations
+          if (fromLocation) locations.add(fromLocation);
+          if (toLocation) locations.add(toLocation);
+        }
+      }
+    });
+
+    // Also check routines for additional locations
+    const routinesRef = firestore.collection('routines');
+    const routinesSnapshot = await routinesRef
+      .where('status', '==', 'approved')
+      .get();
+
+    routinesSnapshot.forEach((doc) => {
+      const routineData = doc.data();
+      if (routineData.route) {
+        const route = routineData.route;
+
+        // Extract locations from routine routes
+        const separators = [' to ', ' - ', ' → ', ' -> ', ' | '];
+        let fromLocation = '';
+        let toLocation = '';
+
+        for (const separator of separators) {
+          if (route.includes(separator)) {
+            const parts = route.split(separator);
+            if (parts.length >= 2) {
+              fromLocation = parts[0].trim();
+              toLocation = parts[1].trim();
+              break;
+            }
+          }
+        }
+
+        if (fromLocation) locations.add(fromLocation);
+        if (toLocation) locations.add(toLocation);
+      }
+    });
+
+    return Array.from(locations).sort();
+  }
+
+  // ==================== ROUTES MANAGEMENT METHODS ====================
+
+  async getRoutes() {
+    const firestore = this.firebaseService.getFirestore();
+    const routesRef = firestore.collection('routes');
+    const snapshot = await routesRef.get();
+
+    const routes = [];
+    snapshot.forEach((doc) => {
+      routes.push(doc.data().name);
+    });
+
+    return routes;
+  }
+
+  async addRoute(routeName: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const routesRef = firestore.collection('routes');
+
+    // Check if route already exists
+    const existingRoute = await routesRef.where('name', '==', routeName).get();
+    if (!existingRoute.empty) {
+      throw new BadRequestException('Route already exists');
+    }
+
+    const routeDoc = routesRef.doc();
+    await routeDoc.set({
+      name: routeName,
+      createdAt: new Date(),
+    });
+
+    return { message: 'Route added successfully', route: routeName };
+  }
+
+  async updateRoute(oldRouteName: string, newRouteName: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const routesRef = firestore.collection('routes');
+
+    // Find the old route
+    const oldRouteQuery = await routesRef
+      .where('name', '==', oldRouteName)
+      .get();
+    if (oldRouteQuery.empty) {
+      throw new NotFoundException('Route not found');
+    }
+
+    // Check if new route name already exists
+    const existingRouteQuery = await routesRef
+      .where('name', '==', newRouteName)
+      .get();
+    if (!existingRouteQuery.empty) {
+      throw new BadRequestException('Route name already exists');
+    }
+
+    const oldRouteDoc = oldRouteQuery.docs[0];
+    await oldRouteDoc.ref.update({
+      name: newRouteName,
+      updatedAt: new Date(),
+    });
+
+    return {
+      message: 'Route updated successfully',
+      oldRoute: oldRouteName,
+      newRoute: newRouteName,
+    };
+  }
+
+  async deleteRoute(routeName: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const routesRef = firestore.collection('routes');
+
+    const routeQuery = await routesRef.where('name', '==', routeName).get();
+    if (routeQuery.empty) {
+      throw new NotFoundException('Route not found');
+    }
+
+    const routeDoc = routeQuery.docs[0];
+    await routeDoc.ref.delete();
+
+    return { message: 'Route deleted successfully', route: routeName };
+  }
+
+  // ==================== ROUTE REQUESTS METHODS ====================
+
+  async createRouteRequest(routeName: string, driverId: string) {
+    const firestore = this.firebaseService.getFirestore();
+
+    // Get driver info
+    const userDoc = await firestore.collection('users').doc(driverId).get();
+    if (!userDoc.exists) {
+      throw new NotFoundException('Driver not found');
+    }
+
+    const userData = userDoc.data();
+    const driverName =
+      userData?.displayName || userData?.name || 'Unknown Driver';
+
+    // Check if request already exists
+    const existingRequest = await firestore
+      .collection('routeRequests')
+      .where('route', '==', routeName)
+      .where('driverId', '==', driverId)
+      .where('status', '==', 'pending')
+      .get();
+
+    if (!existingRequest.empty) {
+      throw new BadRequestException('Route request already exists');
+    }
+
+    const requestDoc = firestore.collection('routeRequests').doc();
+    await requestDoc.set({
+      id: requestDoc.id,
+      route: routeName,
+      driverId: driverId,
+      driverName: driverName,
+      status: 'pending',
+      requestedAt: new Date(),
+    });
+
+    return {
+      message: 'Route request submitted successfully',
+      requestId: requestDoc.id,
+    };
+  }
+
+  async getRouteRequests() {
+    const firestore = this.firebaseService.getFirestore();
+    const requestsRef = firestore.collection('routeRequests');
+    const snapshot = await requestsRef.where('status', '==', 'pending').get();
+
+    const requests = [];
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      requests.push({
+        id: doc.id,
+        route: data.route,
+        driverId: data.driverId,
+        driverName: data.driverName,
+        requestedAt: data.requestedAt,
+      });
+    });
+
+    return requests;
+  }
+
+  async approveRouteRequest(requestId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const requestRef = firestore.collection('routeRequests').doc(requestId);
+
+    const requestDoc = await requestRef.get();
+    if (!requestDoc.exists) {
+      throw new NotFoundException('Route request not found');
+    }
+
+    const requestData = requestDoc.data();
+
+    // Add the route to routes collection
+    await this.addRoute(requestData.route);
+
+    // Update request status
+    await requestRef.update({
+      status: 'approved',
+      approvedAt: new Date(),
+    });
+
+    return {
+      message: 'Route request approved and route added',
+      route: requestData.route,
+    };
+  }
+
+  async rejectRouteRequest(requestId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const requestRef = firestore.collection('routeRequests').doc(requestId);
+
+    const requestDoc = await requestRef.get();
+    if (!requestDoc.exists) {
+      throw new NotFoundException('Route request not found');
+    }
+
+    // Update request status
+    await requestRef.update({
+      status: 'rejected',
+      rejectedAt: new Date(),
+    });
+
+    return { message: 'Route request rejected' };
+  }
+}

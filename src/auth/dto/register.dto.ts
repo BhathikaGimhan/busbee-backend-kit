@@ -8,6 +8,8 @@ import {
   MinLength,
   Min,
   IsEnum,
+  IsArray,
+  ArrayNotEmpty,
 } from 'class-validator';
 
 export enum UserType {
@@ -25,6 +27,16 @@ export enum BusStatus {
   PENDING = 'pending',
   APPROVED = 'approved',
   REJECTED = 'rejected',
+}
+
+export enum DayOfWeek {
+  MONDAY = 'monday',
+  TUESDAY = 'tuesday',
+  WEDNESDAY = 'wednesday',
+  THURSDAY = 'thursday',
+  FRIDAY = 'friday',
+  SATURDAY = 'saturday',
+  SUNDAY = 'sunday',
 }
 
 export class BusDetailsDto {
@@ -50,6 +62,11 @@ export class BusDetailsDto {
   @IsString()
   @IsOptional()
   route?: string;
+
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsEnum(DayOfWeek, { each: true })
+  operatingDays: DayOfWeek[];
 }
 
 export class RegisterDto {

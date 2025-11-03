@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Patch,
   Param,
   Body,
@@ -49,9 +50,14 @@ export class BusController {
   }
 
   @Get('approved')
-  @UseGuards(JwtAuthGuard)
   async getApprovedBuses() {
     return await this.busService.getApprovedBuses();
+  }
+
+  @Get('rejected')
+  @UseGuards(JwtAuthGuard)
+  async getRejectedBuses() {
+    return await this.busService.getRejectedBuses();
   }
 
   @Post('book')
@@ -320,5 +326,76 @@ export class BusController {
   @UseGuards(JwtAuthGuard)
   async getBusPricing(@Param('driverId') driverId: string) {
     return await this.busService.getBusPricing(driverId);
+  }
+
+  // ==================== LOCATION SUGGESTIONS ====================
+
+  @Get('locations/suggestions')
+  async getLocationSuggestions() {
+    return await this.busService.getLocationSuggestions();
+  }
+
+  // ==================== ROUTES MANAGEMENT ENDPOINTS ====================
+
+  @Get('routes')
+  @UseGuards(JwtAuthGuard)
+  async getRoutes() {
+    return await this.busService.getRoutes();
+  }
+
+  @Post('routes')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async addRoute(@Body() body: { route: string }) {
+    return await this.busService.addRoute(body.route);
+  }
+
+  @Put('routes/:route')
+  @UseGuards(JwtAuthGuard)
+  async updateRoute(
+    @Param('route') oldRoute: string,
+    @Body() body: { route: string },
+  ) {
+    return await this.busService.updateRoute(oldRoute, body.route);
+  }
+
+  @Delete('routes/:route')
+  @UseGuards(JwtAuthGuard)
+  async deleteRoute(@Param('route') route: string) {
+    return await this.busService.deleteRoute(route);
+  }
+
+  // ==================== ROUTE REQUESTS ENDPOINTS ====================
+
+  @Post('route-request')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createRouteRequest(
+    @Body() body: { route: string },
+    @Req() req: Request,
+  ) {
+    const authenticatedUser = req.user as { userId: string; email: string };
+    return await this.busService.createRouteRequest(
+      body.route,
+      authenticatedUser.userId,
+    );
+  }
+
+  @Get('route-requests')
+  @UseGuards(JwtAuthGuard)
+  async getRouteRequests() {
+    return await this.busService.getRouteRequests();
+  }
+
+  @Post('route-requests/:requestId/approve')
+  @UseGuards(JwtAuthGuard)
+  async approveRouteRequest(@Param('requestId') requestId: string) {
+    return await this.busService.approveRouteRequest(requestId);
+  }
+
+  @Post('route-requests/:requestId/reject')
+  @UseGuards(JwtAuthGuard)
+  async rejectRouteRequest(@Param('requestId') requestId: string) {
+    return await this.busService.rejectRouteRequest(requestId);
   }
 }
