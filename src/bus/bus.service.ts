@@ -154,6 +154,28 @@ export class BusService {
 
     const firestore = this.firebaseService.getFirestore();
 
+    // Validate operating days before proceeding
+    const busDoc = await firestore.collection('users').doc(bookingData.busId).get();
+    if (!busDoc.exists) {
+      throw new NotFoundException('Bus not found');
+    }
+
+    const busData = busDoc.data();
+    if (busData?.busDetails?.operatingDays) {
+      // Convert travel date to day of week
+      const travelDate = new Date(bookingData.travelDate);
+      const dayOfWeek = travelDate.toLocaleDateString('en-US', {
+        weekday: 'long',
+      }).toUpperCase();
+
+      // Check if bus operates on this day
+      if (!busData.busDetails.operatingDays.includes(dayOfWeek)) {
+        throw new BadRequestException(
+          `This bus does not operate on ${dayOfWeek}s. Operating days: ${busData.busDetails.operatingDays.join(', ')}`
+        );
+      }
+    }
+
     // Check if seats are available before booking
     const seatAvailabilityRef = firestore
       .collection('seatAvailability')
@@ -464,41 +486,32 @@ export class BusService {
           routeFrom = route.trim();
         }
 
-        // Enhanced matching logic
+        // Enhanced matching logic - more precise route matching
         let fromMatch = true;
         let toMatch = true;
 
         if (searchCriteria.from) {
-          const searchFrom = searchCriteria.from.toLowerCase();
-          fromMatch =
-            routeFrom.toLowerCase().includes(searchFrom) ||
-            routeTo.toLowerCase().includes(searchFrom) ||
-            route.includes(searchFrom);
+          const searchFrom = searchCriteria.from.toLowerCase().trim();
+          // For "from" searches, match if the bus route starts from the searched location
+          // OR if it's a round trip and goes to the searched location
+          fromMatch = routeFrom.toLowerCase().includes(searchFrom) ||
+                     (routeTo.toLowerCase().includes(searchFrom) && route.includes('return'));
         }
 
         if (searchCriteria.to) {
-          const searchTo = searchCriteria.to.toLowerCase();
-          toMatch =
-            routeTo.toLowerCase().includes(searchTo) ||
-            routeFrom.toLowerCase().includes(searchTo) ||
-            route.includes(searchTo);
+          const searchTo = searchCriteria.to.toLowerCase().trim();
+          // For "to" searches, match if the bus route goes to the searched location
+          // OR if it's a round trip and starts from the searched location
+          toMatch = routeTo.toLowerCase().includes(searchTo) ||
+                   (routeFrom.toLowerCase().includes(searchTo) && route.includes('return'));
         }
 
-        // For single location searches, match either from or to
-        if (searchCriteria.from && !searchCriteria.to) {
-          fromMatch =
-            routeFrom
-              .toLowerCase()
-              .includes(searchCriteria.from.toLowerCase()) ||
-            routeTo.toLowerCase().includes(searchCriteria.from.toLowerCase()) ||
-            route.includes(searchCriteria.from.toLowerCase());
-          toMatch = true;
-        } else if (!searchCriteria.from && searchCriteria.to) {
-          toMatch =
-            routeTo.toLowerCase().includes(searchCriteria.to.toLowerCase()) ||
-            routeFrom.toLowerCase().includes(searchCriteria.to.toLowerCase()) ||
-            route.includes(searchCriteria.to.toLowerCase());
-          fromMatch = true;
+        // If both from and to are specified, require exact route match
+        if (searchCriteria.from && searchCriteria.to) {
+          const searchFrom = searchCriteria.from.toLowerCase().trim();
+          const searchTo = searchCriteria.to.toLowerCase().trim();
+          fromMatch = routeFrom.toLowerCase().includes(searchFrom);
+          toMatch = routeTo.toLowerCase().includes(searchTo);
         }
 
         if (fromMatch && toMatch) {
@@ -512,6 +525,7 @@ export class BusService {
             driverName: userData.displayName,
             driverEmail: userData.email,
             availableForTrips: userData.busDetails.availableForTrips || false,
+            operatingDays: userData.busDetails.operatingDays || [],
           };
 
           // If bus is available for trips, include available trips
