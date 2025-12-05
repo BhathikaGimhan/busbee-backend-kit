@@ -10,7 +10,9 @@ import {
   IsEnum,
   IsArray,
   ArrayNotEmpty,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export enum UserType {
   PASSENGER = 'passenger',
@@ -39,6 +41,20 @@ export enum DayOfWeek {
   SUNDAY = 'sunday',
 }
 
+export class BusStopDto {
+  @IsString()
+  @IsNotEmpty()
+  location: string;
+
+  @IsNumber()
+  @IsOptional()
+  estimatedTime?: number; // minutes from start
+
+  @IsNumber()
+  @IsOptional()
+  price?: number; // price to this stop
+}
+
 export class BusDetailsDto {
   @IsString()
   @IsNotEmpty()
@@ -62,6 +78,12 @@ export class BusDetailsDto {
   @IsString()
   @IsOptional()
   route?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => BusStopDto)
+  @IsOptional()
+  stops?: BusStopDto[];
 
   @IsArray()
   @ArrayNotEmpty()

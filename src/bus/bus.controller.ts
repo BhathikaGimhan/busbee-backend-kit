@@ -91,6 +91,11 @@ export class BusController {
     return await this.busService.searchBuses({ from, to, date });
   }
 
+  @Get('live')
+  async getAllLiveBuses() {
+    return await this.busService.getAllLiveBuses();
+  }
+
   @Get(':busId/seats')
   async getSeatAvailability(
     @Param('busId') busId: string,
@@ -209,6 +214,12 @@ export class BusController {
   @UseGuards(JwtAuthGuard)
   async getPassengerBookings(@Param('passengerId') passengerId: string) {
     return await this.busService.getPassengerBookings(passengerId);
+  }
+
+  @Get('trackable/:passengerId')
+  @UseGuards(JwtAuthGuard)
+  async getTrackableBuses(@Param('passengerId') passengerId: string) {
+    return await this.busService.getTrackableBuses(passengerId);
   }
 
   @Patch('bookings/:bookingId/status')

@@ -1898,12 +1898,174 @@ export class BusService {
       throw new NotFoundException('Route request not found');
     }
 
-    // Update request status
-    await requestRef.update({
-      status: 'rejected',
-      rejectedAt: new Date(),
+    return { message: 'Route request rejected' };
+  }
+
+  async getAllLiveBuses() {
+    const firestore = this.firebaseService.getFirestore();
+
+    // Get all active trips
+    const tripsSnapshot = await firestore
+      .collection('trips')
+      .where('status', '==', 'active')
+      .get();
+
+    const liveBuses = [];
+
+    for (const tripDoc of tripsSnapshot.docs) {
+      const tripData = tripDoc.data();
+
+      // Get bus details from the driver user document
+      const busDoc = await firestore
+        .collection('users')
+        .doc(tripData.busId)
+        .get();
+
+      if (busDoc.exists) {
+        const busData = busDoc.data();
+
+        // Get current passenger count for this trip
+        const bookingsSnapshot = await firestore
+          .collection('bookings')
+          .where('tripId', '==', tripDoc.id)
+          .where('status', '==', 'confirmed')
+          .get();
+
+        const passengerCount = bookingsSnapshot.size;
+
+        // For now, we'll use mock live data since we don't have real GPS tracking yet
+        // In a real implementation, this would come from a separate location tracking service
+        const mockLiveData = this.generateMockLiveData(tripData, passengerCount);
+
+        liveBuses.push({
+          id: tripDoc.id,
+          busNumber: busData?.busDetails?.busNumber || 'Unknown',
+          busName: busData?.busDetails?.busName || 'Unknown Bus',
+          route: `${tripData.from} to ${tripData.to}`,
+          currentLocation: mockLiveData.currentLocation,
+          nextStop: mockLiveData.nextStop,
+          estimatedArrival: mockLiveData.estimatedArrival,
+          delay: mockLiveData.delay,
+          passengers: passengerCount,
+          capacity: tripData.availableSeats,
+          status: mockLiveData.status,
+          coordinates: mockLiveData.coordinates,
+        });
+      }
+    }
+
+    return liveBuses;
+  }
+
+  private generateMockLiveData(tripData: any, passengerCount: number) {
+    const now = new Date();
+    const departureTime = tripData.departureTime.toDate();
+    const arrivalTime = tripData.arrivalTime.toDate();
+
+    // Calculate progress based on current time vs trip duration
+    const totalDuration = arrivalTime.getTime() - departureTime.getTime();
+    const elapsedTime = now.getTime() - departureTime.getTime();
+    const progress = Math.max(0, Math.min(1, elapsedTime / totalDuration));
+
+    // Mock locations along the route
+    const routeStops = [
+      tripData.from,
+      `Between ${tripData.from} and ${tripData.to}`,
+      `Approaching ${tripData.to}`,
+      tripData.to
+    ];
+
+    const currentStopIndex = Math.floor(progress * (routeStops.length - 1));
+    const currentLocation = routeStops[Math.min(currentStopIndex, routeStops.length - 1)];
+    const nextStop = currentStopIndex < routeStops.length - 1 ? routeStops[currentStopIndex + 1] : null;
+
+    // Calculate delay (random for demo)
+    const delay = Math.random() > 0.8 ? Math.floor(Math.random() * 15) + 1 : 0;
+
+    // Estimated arrival
+    const estimatedArrivalTime = new Date(arrivalTime.getTime() + (delay * 60 * 1000));
+    const estimatedArrival = estimatedArrivalTime.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit'
     });
 
-    return { message: 'Route request rejected' };
+    // Determine status
+    let status: 'on-route' | 'delayed' | 'arrived' = 'on-route';
+    if (delay > 0) status = 'delayed';
+    if (progress >= 1) status = 'arrived';
+
+    // Mock coordinates (would come from GPS in real implementation)
+    const coordinates = {
+      lat: 6.9271 + (Math.random() - 0.5) * 0.1, // Colombo area
+      lng: 79.8612 + (Math.random() - 0.5) * 0.1
+    };
+
+    return {
+      currentLocation,
+      nextStop,
+      estimatedArrival,
+      delay,
+      status,
+      coordinates
+    };
+  }
+
+  async getTrackableBuses(passengerId: string) {
+    const firestore = this.firebaseService.getFirestore();
+
+    try {
+      // Get all bookings for the passenger
+      const bookingsRef = firestore.collection('bookings');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const bookingsSnapshot = await bookingsRef
+        .where('userId', '==', passengerId)
+        .where('travelDate', '>=', today)
+        .where('status', 'in', ['confirmed', 'pending'])
+        .get();
+
+      const trackableBuses = [];
+
+      for (const bookingDoc of bookingsSnapshot.docs) {
+        const bookingData = bookingDoc.data();
+
+        // Get bus details from the driver (busId is the driver's userId)
+        const driverDoc = await firestore.collection('users').doc(bookingData.busId).get();
+
+        if (!driverDoc.exists || !driverDoc.data().busDetails) {
+          continue;
+        }
+
+        const driverData = driverDoc.data();
+        const busDetails = driverData.busDetails;
+
+        // Get live tracking data if available (simplified for now)
+        const liveData = null; // TODO: Implement real live tracking
+
+        // Create trackable bus object
+        const trackableBus = {
+          id: bookingData.busId,
+          busName: busDetails.busName,
+          busNumber: busDetails.busNumber,
+          route: busDetails.route,
+          currentLocation: liveData?.currentLocation || 'Location not available',
+          estimatedArrival: liveData?.estimatedArrival || 'TBD',
+          status: liveData?.status || 'scheduled',
+          driverName: driverData.displayName || 'Unknown Driver',
+          driverPhone: driverData.phoneNumber || '',
+          bookingId: bookingDoc.id,
+          travelDate: bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+          departureTime: bookingData.departureTime || 'TBD'
+        };
+
+        trackableBuses.push(trackableBus);
+      }
+
+      return trackableBuses;
+    } catch (error) {
+      console.error('Error getting trackable buses:', error);
+      throw new BadRequestException('Failed to get trackable buses');
+    }
   }
 }
