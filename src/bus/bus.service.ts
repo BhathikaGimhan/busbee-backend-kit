@@ -329,6 +329,31 @@ export class BusService {
     return buses;
   }
 
+  async getPrivateHireBuses() {
+    const firestore = this.firebaseService.getFirestore();
+    const busesRef = firestore.collection('buses');
+
+    // Query buses that are approved and available for trips
+    const snapshot = await busesRef
+      .where('availableForTrips', '==', true)
+      .where('status', '==', BusStatus.APPROVED)
+      .get();
+
+    const buses = [];
+    for (const doc of snapshot.docs) {
+      const busData = doc.data();
+      
+      // Optionally fetch driver details if needed
+      // For now returning the bus data directly
+      buses.push({
+        id: doc.id,
+        ...busData,
+      });
+    }
+
+    return buses;
+  }
+
   async bookSeats(bookingData: {
     userId: string;
     busId: string;
