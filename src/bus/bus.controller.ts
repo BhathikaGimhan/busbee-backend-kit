@@ -112,6 +112,11 @@ export class BusController {
     return await this.busService.getAllLiveBuses();
   }
 
+  @Get('private-hire')
+  async getPrivateHireBuses() {
+    return await this.busService.getPrivateHireBuses();
+  }
+
   @Get(':busId/seats')
   async getSeatAvailability(
     @Param('busId') busId: string,
