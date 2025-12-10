@@ -5,6 +5,8 @@ import {
 } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BusStatus } from '../auth/dto/register.dto';
+import { AddBusDto } from './dto/add-bus.dto';
+import * as admin from 'firebase-admin';
 
 @Injectable()
 export class BusService {
@@ -12,123 +14,319 @@ export class BusService {
 
   async getPendingBusRegistrations() {
     const firestore = this.firebaseService.getFirestore();
-    const usersRef = firestore.collection('users');
+    const pendingBuses = [];
 
-    const snapshot = await usersRef
+    // 1. Fetch from 'users' collection (Legacy buses)
+    const usersRef = firestore.collection('users');
+    const usersSnapshot = await usersRef
       .where('userType', '==', 'driver')
       .where('busDetails.status', '==', BusStatus.PENDING)
       .get();
 
-    const pendingBuses = [];
-    snapshot.forEach((doc) => {
+    usersSnapshot.forEach((doc) => {
       const userData = doc.data();
       if (userData.busDetails) {
         pendingBuses.push({
+          id: doc.id, // Use userId as busId for legacy buses
           userId: doc.id,
           userEmail: userData.email,
           userDisplayName: userData.displayName,
           busDetails: userData.busDetails,
           submittedAt: userData.busDetails.submittedAt,
+          isLegacy: true,
         });
       }
     });
+
+    // 2. Fetch from 'buses' collection (New buses)
+    const busesRef = firestore.collection('buses');
+    const busesSnapshot = await busesRef
+      .where('status', '==', BusStatus.PENDING)
+      .get();
+
+    for (const doc of busesSnapshot.docs) {
+      const busData = doc.data();
+      // Fetch driver details
+      let driverName = 'Unknown';
+      let driverEmail = '';
+      try {
+        const driverDoc = await usersRef.doc(busData.driverId).get();
+        if (driverDoc.exists) {
+            const driverData = driverDoc.data();
+            driverName = driverData.displayName;
+            driverEmail = driverData.email;
+        }
+      } catch (e) {
+          console.error(`Error fetching driver for bus ${doc.id}:`, e);
+      }
+
+      pendingBuses.push({
+        id: doc.id,
+        userId: busData.driverId,
+        userEmail: driverEmail,
+        userDisplayName: driverName,
+        busDetails: {
+            ...busData,
+            status: busData.status, // Ensure status is present in busDetails structure for frontend compatibility
+        },
+        submittedAt: busData.submittedAt,
+        isLegacy: false,
+      });
+    }
 
     return pendingBuses;
   }
 
-  async approveBusRegistration(userId: string) {
+  async approveBusRegistration(id: string) {
     const firestore = this.firebaseService.getFirestore();
-    const userRef = firestore.collection('users').doc(userId);
-
+    
+    // Check if it's a legacy bus (userId) or new bus (busId)
+    // We try 'users' collection first. If user exists and has a bus, we assume it's legacy approval if the bus is pending.
+    // However, if the ID passed isn't a user ID, or user doesn't have pending bus, we check 'buses' collection.
+    
+    const userRef = firestore.collection('users').doc(id);
     const userDoc = await userRef.get();
-    if (!userDoc.exists) {
-      throw new NotFoundException('User not found');
+
+    if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData?.busDetails && userData.busDetails.status === BusStatus.PENDING) {
+             // It is a legacy bus registration on the user profile
+            await userRef.update({
+                'busDetails.status': BusStatus.APPROVED,
+                'busDetails.approvedAt': new Date(),
+            });
+            return { message: 'Bus registration approved successfully (Legacy)' };
+        }
     }
 
-    const userData = userDoc.data();
-    if (!userData?.busDetails) {
-      throw new NotFoundException('Bus details not found');
+    // If not a legacy bus, check 'buses' collection
+    const busRef = firestore.collection('buses').doc(id);
+    const busDoc = await busRef.get();
+
+    if (busDoc.exists) {
+        await busRef.update({
+            status: BusStatus.APPROVED,
+            approvedAt: new Date(),
+        });
+        return { message: 'Bus registration approved successfully' };
     }
 
-    await userRef.update({
-      'busDetails.status': BusStatus.APPROVED,
-      'busDetails.approvedAt': new Date(),
-    });
-
-    return { message: 'Bus registration approved successfully' };
+    throw new NotFoundException('Bus registration not found');
   }
 
-  async rejectBusRegistration(userId: string, reason?: string) {
+  async rejectBusRegistration(id: string, reason?: string) {
     const firestore = this.firebaseService.getFirestore();
-    const userRef = firestore.collection('users').doc(userId);
-
+    
+    // Check legacy first
+    const userRef = firestore.collection('users').doc(id);
     const userDoc = await userRef.get();
-    if (!userDoc.exists) {
-      throw new NotFoundException('User not found');
+
+    if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData?.busDetails && userData.busDetails.status === BusStatus.PENDING) {
+             await userRef.update({
+                'busDetails.status': BusStatus.REJECTED,
+                'busDetails.rejectedAt': new Date(),
+                'busDetails.rejectionReason': reason || 'No reason provided',
+            });
+            return { message: 'Bus registration rejected (Legacy)' };
+        }
     }
 
-    const userData = userDoc.data();
-    if (!userData?.busDetails) {
-      throw new NotFoundException('Bus details not found');
+    // Check new buses
+    const busRef = firestore.collection('buses').doc(id);
+    const busDoc = await busRef.get();
+
+    if (busDoc.exists) {
+        await busRef.update({
+            status: BusStatus.REJECTED,
+            rejectedAt: new Date(),
+            rejectionReason: reason || 'No reason provided',
+        });
+        return { message: 'Bus registration rejected' };
     }
 
-    await userRef.update({
-      'busDetails.status': BusStatus.REJECTED,
-      'busDetails.rejectedAt': new Date(),
-      'busDetails.rejectionReason': reason || 'No reason provided',
-    });
-
-    return { message: 'Bus registration rejected' };
+    throw new NotFoundException('Bus registration not found');
   }
 
   async getApprovedBuses() {
     const firestore = this.firebaseService.getFirestore();
-    const usersRef = firestore.collection('users');
+    const approvedBuses = [];
 
-    const snapshot = await usersRef
+    // 1. Legacy Buses
+    const usersRef = firestore.collection('users');
+    const usersSnapshot = await usersRef
       .where('userType', '==', 'driver')
       .where('busDetails.status', '==', BusStatus.APPROVED)
       .get();
 
-    const approvedBuses = [];
-    snapshot.forEach((doc) => {
+    usersSnapshot.forEach((doc) => {
       const userData = doc.data();
       if (userData.busDetails) {
         approvedBuses.push({
+          id: doc.id,
           userId: doc.id,
           userEmail: userData.email,
           userDisplayName: userData.displayName,
           busDetails: userData.busDetails,
+          isLegacy: true,
         });
       }
     });
+
+    // 2. New Buses
+    const busesRef = firestore.collection('buses');
+    const busesSnapshot = await busesRef
+      .where('status', '==', BusStatus.APPROVED)
+      .get();
+
+    for (const doc of busesSnapshot.docs) {
+       const busData = doc.data();
+        let driverName = 'Unknown';
+        let driverEmail = '';
+        try {
+            const driverDoc = await usersRef.doc(busData.driverId).get();
+            if (driverDoc.exists) {
+                const driverData = driverDoc.data();
+                driverName = driverData.displayName;
+                driverEmail = driverData.email;
+            }
+        } catch (e) {
+            console.error(`Error fetching driver for bus ${doc.id}:`, e);
+        }
+
+       approvedBuses.push({
+          id: doc.id,
+          userId: busData.driverId,
+          userEmail: driverEmail,
+          userDisplayName: driverName,
+          busDetails: {
+              ...busData,
+              status: busData.status,
+          },
+          isLegacy: false,
+       });
+    }
 
     return approvedBuses;
   }
 
   async getRejectedBuses() {
     const firestore = this.firebaseService.getFirestore();
-    const usersRef = firestore.collection('users');
+    const rejectedBuses = [];
 
-    const snapshot = await usersRef
+    // 1. Legacy Buses
+    const usersRef = firestore.collection('users');
+    const usersSnapshot = await usersRef
       .where('userType', '==', 'driver')
       .where('busDetails.status', '==', BusStatus.REJECTED)
       .get();
 
-    const rejectedBuses = [];
-    snapshot.forEach((doc) => {
+    usersSnapshot.forEach((doc) => {
       const userData = doc.data();
       if (userData.busDetails) {
         rejectedBuses.push({
+          id: doc.id,
           userId: doc.id,
           userEmail: userData.email,
           userDisplayName: userData.displayName,
           busDetails: userData.busDetails,
+          isLegacy: true,
         });
       }
     });
 
+    // 2. New Buses
+    const busesRef = firestore.collection('buses');
+    const busesSnapshot = await busesRef
+      .where('status', '==', BusStatus.REJECTED)
+      .get();
+
+     for (const doc of busesSnapshot.docs) {
+       const busData = doc.data();
+        let driverName = 'Unknown';
+        let driverEmail = '';
+        try {
+            const driverDoc = await usersRef.doc(busData.driverId).get();
+            if (driverDoc.exists) {
+                const driverData = driverDoc.data();
+                driverName = driverData.displayName;
+                driverEmail = driverData.email;
+            }
+        } catch (e) {
+            console.error(`Error fetching driver for bus ${doc.id}:`, e);
+        }
+
+       rejectedBuses.push({
+          id: doc.id,
+          userId: busData.driverId,
+          userEmail: driverEmail,
+          userDisplayName: driverName,
+          busDetails: {
+              ...busData,
+              status: busData.status,
+          },
+          isLegacy: false,
+       });
+    }
+
     return rejectedBuses;
+  }
+
+  async addBus(driverId: string, addBusDto: AddBusDto) {
+    const firestore = this.firebaseService.getFirestore();
+    const busesRef = firestore.collection('buses');
+
+    const newBusRef = busesRef.doc();
+    const busData = {
+      ...addBusDto,
+      id: newBusRef.id,
+      driverId: driverId,
+      status: BusStatus.PENDING,
+      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await newBusRef.set(busData);
+
+    return {
+      message: 'Bus registered successfully',
+      busId: newBusRef.id,
+      bus: busData,
+    };
+  }
+
+  async getMyBuses(driverId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const buses = [];
+
+    // 1. Fetch Legacy Bus
+    const userRef = firestore.collection('users').doc(driverId);
+    const userDoc = await userRef.get();
+    if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData?.busDetails) {
+            buses.push({
+                id: driverId, // Legacy bus ID is user ID
+                ...userData.busDetails,
+                isLegacy: true,
+            });
+        }
+    }
+
+    // 2. Fetch New Buses
+    const busesRef = firestore.collection('buses');
+    const snapshot = await busesRef.where('driverId', '==', driverId).get();
+    
+    snapshot.forEach(doc => {
+        buses.push({
+            id: doc.id,
+            ...doc.data(),
+            isLegacy: false,
+        });
+    });
+
+    return buses;
   }
 
   async bookSeats(bookingData: {

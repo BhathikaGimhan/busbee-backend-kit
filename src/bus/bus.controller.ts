@@ -18,6 +18,7 @@ import { BusService } from './bus.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
 import { FirebaseService } from '../firebase/firebase.service';
+import { AddBusDto } from './dto/add-bus.dto';
 
 @Controller('bus')
 export class BusController {
@@ -30,6 +31,21 @@ export class BusController {
   @UseGuards(JwtAuthGuard)
   async getPendingBusRegistrations() {
     return await this.busService.getPendingBusRegistrations();
+  }
+
+  @Post('add')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async addBus(@Body() addBusDto: AddBusDto, @Req() req: Request) {
+    const authenticatedUser = req.user as { userId: string; email: string };
+    return await this.busService.addBus(authenticatedUser.userId, addBusDto);
+  }
+
+  @Get('my-buses')
+  @UseGuards(JwtAuthGuard)
+  async getMyBuses(@Req() req: Request) {
+    const authenticatedUser = req.user as { userId: string; email: string };
+    return await this.busService.getMyBuses(authenticatedUser.userId);
   }
 
   @Post(':userId/approve')
