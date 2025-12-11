@@ -48,6 +48,15 @@ export class BusController {
     return await this.busService.getMyBuses(authenticatedUser.userId);
   }
 
+  @Patch(':busId/location')
+  @UseGuards(JwtAuthGuard)
+  async updateBusLocation(
+    @Param('busId') busId: string,
+    @Body() location: { lat: number; lng: number; heading?: number; speed?: number },
+  ) {
+    return this.busService.updateBusLocation(busId, location);
+  }
+
   @Post(':userId/approve')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -251,6 +260,7 @@ export class BusController {
   ) {
     return await this.busService.updateBookingStatus(bookingId, body.status);
   }
+
 
   // ==================== ROUTINE MANAGEMENT ENDPOINTS ====================
 
