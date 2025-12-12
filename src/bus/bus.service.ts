@@ -2262,32 +2262,57 @@ export class BusService {
     try {
       // Get all bookings for the passenger
       const bookingsRef = firestore.collection('bookings');
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+    
+    // Look for bookings from yesterday onwards to handle timezone differences
+    // and ensuring we catch ongoing trips that might have started "yesterday" in UTC but are still active.
+    const searchDate = new Date();
+    searchDate.setDate(searchDate.getDate() - 1);
+    searchDate.setHours(0, 0, 0, 0);
 
-      const bookingsSnapshot = await bookingsRef
-        .where('userId', '==', passengerId)
-        .where('travelDate', '>=', today)
-        .where('status', 'in', ['confirmed', 'pending'])
-        .get();
-
-      const trackableBuses = [];
+    const bookingsSnapshot = await bookingsRef
+      .where('userId', '==', passengerId)
+      .get();
+      
+      const trackableBusesMap = new Map();
 
       for (const bookingDoc of bookingsSnapshot.docs) {
         const bookingData = bookingDoc.data();
+        const bStatus = bookingData.status;
+        const bDate = bookingData.travelDate?.toDate ? bookingData.travelDate.toDate() : new Date(bookingData.travelDate);
+        
+        if (!['confirmed', 'pending'].includes(bStatus)) {
+            continue;
+        }
+
+        if (bDate < searchDate) {
+            continue;
+        }
+        
+        // Avoid re-fetching/processing if we already have this bus
+        if (trackableBusesMap.has(bookingData.busId)) {
+            continue;
+        }
 
         // Get bus details from the driver (busId is the driver's userId)
         const driverDoc = await firestore.collection('users').doc(bookingData.busId).get();
 
-        if (!driverDoc.exists || !driverDoc.data().busDetails) {
-          continue;
+        if (!driverDoc.exists) {
+           continue;
         }
-
+        
         const driverData = driverDoc.data();
+        if (!driverData.busDetails) {
+           continue;
+        }
+        
         const busDetails = driverData.busDetails;
-
-        // Get live tracking data if available (simplified for now)
-        const liveData = null; // TODO: Implement real live tracking
+        const currentLocation = busDetails?.currentLocation;
+        
+        // Check if the location is stale? (Optional, but good practice. For now, assume if it exists, it's valid).
+        
+        // Determine status based on live data availability
+        // If no location data, we assume the bus hasn't started or is scheduled.
+        const status = currentLocation ? 'on-route' : 'scheduled';
 
         // Create trackable bus object
         const trackableBus = {
@@ -2295,9 +2320,10 @@ export class BusService {
           busName: busDetails.busName,
           busNumber: busDetails.busNumber,
           route: busDetails.route,
-          currentLocation: liveData?.currentLocation || 'Location not available',
-          estimatedArrival: liveData?.estimatedArrival || 'TBD',
-          status: liveData?.status || 'scheduled',
+          currentLocation: currentLocation, // Pass the object or string
+          coordinates: (currentLocation && typeof currentLocation === 'object' && 'lat' in currentLocation) ? currentLocation : undefined,
+          estimatedArrival: 'Calculating...', // Could be enhanced with Distance Matrix later
+          status: status,
           driverName: driverData.displayName || 'Unknown Driver',
           driverPhone: driverData.phoneNumber || '',
           bookingId: bookingDoc.id,
@@ -2305,10 +2331,12 @@ export class BusService {
           departureTime: bookingData.departureTime || 'TBD'
         };
 
-        trackableBuses.push(trackableBus);
+        trackableBusesMap.set(bookingData.busId, trackableBus);
       }
+    
+    console.log(`[DEBUG] Returning ${trackableBusesMap.size} trackable buses.`);
 
-      return trackableBuses;
+      return Array.from(trackableBusesMap.values());
     } catch (error) {
       console.error('Error getting trackable buses:', error);
       throw new BadRequestException('Failed to get trackable buses');
