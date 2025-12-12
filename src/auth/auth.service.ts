@@ -116,7 +116,8 @@ export class AuthService {
           ...(userData?.busDetails && { busDetails: userData.busDetails }),
         },
       };
-    } catch {
+    } catch (error) {
+      console.error('Login error:', error);
       throw new UnauthorizedException('Invalid credentials');
     }
   }

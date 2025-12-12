@@ -329,6 +329,31 @@ export class BusService {
     return buses;
   }
 
+  async getPrivateHireBuses() {
+    const firestore = this.firebaseService.getFirestore();
+    const busesRef = firestore.collection('buses');
+
+    // Query buses that are approved and available for trips
+    const snapshot = await busesRef
+      .where('availableForTrips', '==', true)
+      .where('status', '==', BusStatus.APPROVED)
+      .get();
+
+    const buses = [];
+    for (const doc of snapshot.docs) {
+      const busData = doc.data();
+      
+      // Optionally fetch driver details if needed
+      // For now returning the bus data directly
+      buses.push({
+        id: doc.id,
+        ...busData,
+      });
+    }
+
+    return buses;
+  }
+
   async bookSeats(bookingData: {
     userId: string;
     busId: string;
@@ -1162,6 +1187,53 @@ export class BusService {
     };
   }
 
+  async getPendingRoutines() {
+    const firestore = this.firebaseService.getFirestore();
+    const routinesRef = firestore.collection('routines');
+
+    try {
+      const snapshot = await routinesRef
+        .where('status', '==', 'pending_approval')
+        .orderBy('createdAt', 'desc')
+        .get();
+
+      const routines = [];
+      snapshot.forEach((doc) => {
+        routines.push({
+          id: doc.id,
+          ...doc.data(),
+        });
+      });
+
+      return routines;
+    } catch (error) {
+      console.warn(
+        'Firestore index not found, fetching without ordering:',
+        error.message,
+      );
+      const snapshot = await routinesRef
+        .where('status', '==', 'pending_approval')
+        .get();
+
+      const routines = [];
+      snapshot.forEach((doc) => {
+        routines.push({
+          id: doc.id,
+          ...doc.data(),
+        });
+      });
+
+      // Sort in memory
+      routines.sort((a, b) => {
+        const aTime = a.createdAt?.seconds || 0;
+        const bTime = b.createdAt?.seconds || 0;
+        return bTime - aTime;
+      });
+
+      return routines;
+    }
+  }
+
   async getRoutinesByDriver(driverId: string) {
     const firestore = this.firebaseService.getFirestore();
     const routinesRef = firestore.collection('routines');
@@ -1238,52 +1310,6 @@ export class BusService {
       const snapshot = await routinesRef
         .where('busId', '==', busId)
         .where('status', '==', 'approved')
-        .get();
-
-      const routines = [];
-      snapshot.forEach((doc) => {
-        routines.push({
-          id: doc.id,
-          ...doc.data(),
-        });
-      });
-
-      routines.sort((a, b) => {
-        const aTime = a.createdAt?.seconds || 0;
-        const bTime = b.createdAt?.seconds || 0;
-        return aTime - bTime;
-      });
-
-      return routines;
-    }
-  }
-
-  async getPendingRoutines() {
-    const firestore = this.firebaseService.getFirestore();
-    const routinesRef = firestore.collection('routines');
-
-    try {
-      const snapshot = await routinesRef
-        .where('status', '==', 'pending_approval')
-        .orderBy('createdAt', 'desc')
-        .get();
-
-      const routines = [];
-      snapshot.forEach((doc) => {
-        routines.push({
-          id: doc.id,
-          ...doc.data(),
-        });
-      });
-
-      return routines;
-    } catch (error) {
-      console.warn(
-        'Firestore index not found, fetching without ordering:',
-        error.message,
-      );
-      const snapshot = await routinesRef
-        .where('status', '==', 'pending_approval')
         .get();
 
       const routines = [];
@@ -2101,58 +2127,80 @@ export class BusService {
 
   async getAllLiveBuses() {
     const firestore = this.firebaseService.getFirestore();
-
-    // Get all active trips
-    const tripsSnapshot = await firestore
-      .collection('trips')
-      .where('status', '==', 'active')
-      .get();
-
-    const liveBuses = [];
-
-    for (const tripDoc of tripsSnapshot.docs) {
-      const tripData = tripDoc.data();
-
-      // Get bus details from the driver user document
-      const busDoc = await firestore
-        .collection('users')
-        .doc(tripData.busId)
+    try {
+      // 1. Fetch from 'buses' collection (New buses)
+      const busesSnapshot = await firestore
+        .collection('buses')
+        .where('currentLocation', '!=', null)
         .get();
 
-      if (busDoc.exists) {
-        const busData = busDoc.data();
+      // 2. Fetch from 'users' collection (Legacy buses)
+      const usersSnapshot = await firestore
+        .collection('users')
+        .where('userType', '==', 'driver')
+        .where('busDetails.currentLocation', '!=', null)
+        .get();
 
-        // Get current passenger count for this trip
-        const bookingsSnapshot = await firestore
-          .collection('bookings')
-          .where('tripId', '==', tripDoc.id)
-          .where('status', '==', 'confirmed')
-          .get();
+      const liveBuses = [];
+      const threshold = 10 * 60 * 1000; // 10 minutes timeout
+      const now = Date.now();
 
-        const passengerCount = bookingsSnapshot.size;
-
-        // For now, we'll use mock live data since we don't have real GPS tracking yet
-        // In a real implementation, this would come from a separate location tracking service
-        const mockLiveData = this.generateMockLiveData(tripData, passengerCount);
-
-        liveBuses.push({
-          id: tripDoc.id,
-          busNumber: busData?.busDetails?.busNumber || 'Unknown',
-          busName: busData?.busDetails?.busName || 'Unknown Bus',
-          route: `${tripData.from} to ${tripData.to}`,
-          currentLocation: mockLiveData.currentLocation,
-          nextStop: mockLiveData.nextStop,
-          estimatedArrival: mockLiveData.estimatedArrival,
-          delay: mockLiveData.delay,
-          passengers: passengerCount,
-          capacity: tripData.availableSeats,
-          status: mockLiveData.status,
-          coordinates: mockLiveData.coordinates,
-        });
+      // Process new buses
+      for (const busDoc of busesSnapshot.docs) {
+          const busData = busDoc.data();
+          if (!busData.currentLocation) continue;
+          
+          const lastUpdate = busData.lastLocationUpdate?.toDate?.().getTime() || 0;
+          
+          if (now - lastUpdate < threshold) {
+              liveBuses.push({
+                  id: busDoc.id,
+                  busNumber: busData.busNumber || 'Unknown',
+                  busName: busData.busName || 'Unknown Bus',
+                  route: busData.route || 'Unknown Route',
+                  currentLocation: busData.currentLocation,
+                  coordinates: busData.currentLocation, // Backwards compatibility if needed
+                  status: 'active',
+                  passengers: 0, // TODO: fetch real count
+                  estimatedArrival: 'TBD',
+                  nextStop: 'Unknown',
+                  heading: busData.currentLocation.heading || 0,
+                  speed: busData.currentLocation.speed || 0,
+                  type: 'standard'
+              });
+          }
       }
-    }
 
-    return liveBuses;
+      // Process legacy buses
+      for (const userDoc of usersSnapshot.docs) {
+        const userData = userDoc.data();
+        if (userData.busDetails && userData.busDetails.currentLocation) {
+            const lastUpdate = userData.busDetails.lastLocationUpdate?.toDate?.().getTime() || 0;
+            if (now - lastUpdate < threshold) {
+                liveBuses.push({
+                    id: userDoc.id,
+                    busNumber: userData.busDetails.busNumber || 'Unknown',
+                    busName: userData.busDetails.busName || 'Unknown Bus',
+                    route: userData.busDetails.route || 'Unknown Route',
+                    currentLocation: userData.busDetails.currentLocation,
+                    coordinates: userData.busDetails.currentLocation,
+                    status: 'active',
+                    passengers: 0, 
+                    estimatedArrival: 'TBD',
+                    nextStop: 'Unknown',
+                    heading: userData.busDetails.currentLocation.heading || 0,
+                    speed: userData.busDetails.currentLocation.speed || 0,
+                    type: 'legacy'
+                });
+            }
+        }
+      }
+
+      return liveBuses;
+    } catch (error) {
+      console.error('Error getting live buses:', error);
+      return [];
+    }
   }
 
   private generateMockLiveData(tripData: any, passengerCount: number) {
@@ -2214,32 +2262,57 @@ export class BusService {
     try {
       // Get all bookings for the passenger
       const bookingsRef = firestore.collection('bookings');
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+    
+    // Look for bookings from yesterday onwards to handle timezone differences
+    // and ensuring we catch ongoing trips that might have started "yesterday" in UTC but are still active.
+    const searchDate = new Date();
+    searchDate.setDate(searchDate.getDate() - 1);
+    searchDate.setHours(0, 0, 0, 0);
 
-      const bookingsSnapshot = await bookingsRef
-        .where('userId', '==', passengerId)
-        .where('travelDate', '>=', today)
-        .where('status', 'in', ['confirmed', 'pending'])
-        .get();
-
-      const trackableBuses = [];
+    const bookingsSnapshot = await bookingsRef
+      .where('userId', '==', passengerId)
+      .get();
+      
+      const trackableBusesMap = new Map();
 
       for (const bookingDoc of bookingsSnapshot.docs) {
         const bookingData = bookingDoc.data();
+        const bStatus = bookingData.status;
+        const bDate = bookingData.travelDate?.toDate ? bookingData.travelDate.toDate() : new Date(bookingData.travelDate);
+        
+        if (!['confirmed', 'pending'].includes(bStatus)) {
+            continue;
+        }
+
+        if (bDate < searchDate) {
+            continue;
+        }
+        
+        // Avoid re-fetching/processing if we already have this bus
+        if (trackableBusesMap.has(bookingData.busId)) {
+            continue;
+        }
 
         // Get bus details from the driver (busId is the driver's userId)
         const driverDoc = await firestore.collection('users').doc(bookingData.busId).get();
 
-        if (!driverDoc.exists || !driverDoc.data().busDetails) {
-          continue;
+        if (!driverDoc.exists) {
+           continue;
         }
-
+        
         const driverData = driverDoc.data();
+        if (!driverData.busDetails) {
+           continue;
+        }
+        
         const busDetails = driverData.busDetails;
-
-        // Get live tracking data if available (simplified for now)
-        const liveData = null; // TODO: Implement real live tracking
+        const currentLocation = busDetails?.currentLocation;
+        
+        // Check if the location is stale? (Optional, but good practice. For now, assume if it exists, it's valid).
+        
+        // Determine status based on live data availability
+        // If no location data, we assume the bus hasn't started or is scheduled.
+        const status = currentLocation ? 'on-route' : 'scheduled';
 
         // Create trackable bus object
         const trackableBus = {
@@ -2247,9 +2320,10 @@ export class BusService {
           busName: busDetails.busName,
           busNumber: busDetails.busNumber,
           route: busDetails.route,
-          currentLocation: liveData?.currentLocation || 'Location not available',
-          estimatedArrival: liveData?.estimatedArrival || 'TBD',
-          status: liveData?.status || 'scheduled',
+          currentLocation: currentLocation, // Pass the object or string
+          coordinates: (currentLocation && typeof currentLocation === 'object' && 'lat' in currentLocation) ? currentLocation : undefined,
+          estimatedArrival: 'Calculating...', // Could be enhanced with Distance Matrix later
+          status: status,
           driverName: driverData.displayName || 'Unknown Driver',
           driverPhone: driverData.phoneNumber || '',
           bookingId: bookingDoc.id,
@@ -2257,13 +2331,45 @@ export class BusService {
           departureTime: bookingData.departureTime || 'TBD'
         };
 
-        trackableBuses.push(trackableBus);
+        trackableBusesMap.set(bookingData.busId, trackableBus);
       }
+    
+    console.log(`[DEBUG] Returning ${trackableBusesMap.size} trackable buses.`);
 
-      return trackableBuses;
+      return Array.from(trackableBusesMap.values());
     } catch (error) {
       console.error('Error getting trackable buses:', error);
       throw new BadRequestException('Failed to get trackable buses');
     }
+  }
+
+  // ==================== LIVE LOCATION TRACKING ====================
+
+  async updateBusLocation(
+    busId: string,
+    location: { lat: number; lng: number; heading?: number; speed?: number },
+  ) {
+    const firestore = this.firebaseService.getFirestore();
+    
+    const busRef = firestore.collection('buses').doc(busId);
+    const busDoc = await busRef.get();
+
+    if (busDoc.exists) {
+        await busRef.update({
+            currentLocation: location,
+            lastLocationUpdate: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    } else {
+        const userRef = firestore.collection('users').doc(busId);
+        const userDoc = await userRef.get();
+        
+        if (userDoc.exists) {
+             await userRef.update({
+                'busDetails.currentLocation': location,
+                'busDetails.lastLocationUpdate': admin.firestore.FieldValue.serverTimestamp(),
+            });
+        }
+    }
+    return { success: true };
   }
 }
