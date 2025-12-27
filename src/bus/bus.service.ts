@@ -234,7 +234,8 @@ export class BusService {
           isLegacy: true,
         });
       }
-    });
+
+});
 
     // 2. New Buses
     const busesRef = firestore.collection('buses');
@@ -1360,15 +1361,53 @@ export class BusService {
         .get();
 
       const routines: any[] = [];
+      const busIds = new Set<string>();
+
       snapshot.forEach((doc) => {
+        const data = doc.data();
+        busIds.add(data.busId);
         routines.push({
           id: doc.id,
-          ...doc.data(),
+          ...data,
         });
       });
 
-      console.log(`✅ [getApprovedRoutines] Found ${routines.length} routines via primary query.`);
-      return routines;
+      // Fetch details for all relevant buses
+      const busDetailsMap = new Map();
+      if (busIds.size > 0) {
+        // Firestore 'in' query supports up to 10 items. For robustness, we'll fetch individually or ideally allow up to 10 batches.
+        // For simplicity/safety with larger sets, let's fetch individual user docs concurrently or use batches.
+        // Given potentially many buses, fetching individually with Promise.all is reasonable for now if not massive scale.
+        const busPromises = Array.from(busIds).map(async (busId) => {
+            const userDoc = await firestore.collection('users').doc(busId).get();
+            if (userDoc.exists) {
+                const userData = userDoc.data();
+                return { 
+                    busId, 
+                    busName: userData.busDetails?.busName || 'Unknown Bus',
+                    busNumber: userData.busDetails?.busNumber || 'N/A',
+                    driverName: userData.displayName || 'Unknown Driver'
+                };
+            }
+            return null;
+        });
+
+        const buses = await Promise.all(busPromises);
+        buses.forEach(bus => {
+            if (bus) {
+                busDetailsMap.set(bus.busId, bus);
+            }
+        });
+      }
+
+      // Attach bus details to routines
+      const enrichedRoutines = routines.map(routine => ({
+          ...routine,
+          busDetails: busDetailsMap.get(routine.busId) || { busName: 'Unknown', busNumber: 'N/A', driverName: 'Unknown' }
+      }));
+
+      console.log(`✅ [getApprovedRoutines] Found ${enrichedRoutines.length} routines.`);
+      return enrichedRoutines;
     } catch (error) {
       console.warn('🔥 [getApprovedRoutines] Primary query failed (index?), running fallback:', error.message);
       const snapshot = await routinesRef
@@ -2430,3 +2469,4 @@ export class BusService {
     return { success: true };
   }
 }
+

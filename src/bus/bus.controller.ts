@@ -165,6 +165,7 @@ export class BusController {
     return await this.busService.getAllLiveBuses();
   }
 
+
   @Get('private-hire')
   async getPrivateHireBuses() {
     return await this.busService.getPrivateHireBuses();
@@ -429,7 +430,6 @@ export class BusController {
   // ==================== ROUTES MANAGEMENT ENDPOINTS ====================
 
   @Get('routes')
-  @UseGuards(JwtAuthGuard)
   async getRoutes() {
     return await this.busService.getRoutes();
   }

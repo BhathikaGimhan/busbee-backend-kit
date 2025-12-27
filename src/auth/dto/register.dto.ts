@@ -89,6 +89,11 @@ export class BusDetailsDto {
   @ArrayNotEmpty()
   @IsEnum(DayOfWeek, { each: true })
   operatingDays: DayOfWeek[];
+
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  photos?: string[];
 }
 
 export class RegisterDto {
