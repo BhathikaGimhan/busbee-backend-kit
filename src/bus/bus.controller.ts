@@ -13,7 +13,13 @@ import {
   Req,
   BadRequestException,
   Delete,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname } from 'path';
+import { existsSync, mkdirSync } from 'fs';
 import { BusService } from './bus.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Request } from 'express';
@@ -36,8 +42,46 @@ export class BusController {
   @Post('add')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  async addBus(@Body() addBusDto: AddBusDto, @Req() req: Request) {
+  @UseInterceptors(
+    FileInterceptor('photo', {
+      storage: diskStorage({
+        destination: (req, file, cb) => {
+          const uploadPath = './uploads/buses';
+          if (!existsSync(uploadPath)) {
+            mkdirSync(uploadPath, { recursive: true });
+          }
+          cb(null, uploadPath);
+        },
+        filename: (req, file, cb) => {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+          cb(null, `${uniqueSuffix}${extname(file.originalname)}`);
+        },
+      }),
+    }),
+  )
+  async addBus(
+    @Body('busData') busDataString: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Req() req: Request,
+  ) {
     const authenticatedUser = req.user as { userId: string; email: string };
+    
+    let addBusDto: AddBusDto;
+    try {
+       // Handle case where body might be parsed already (if content-type confusion) or string
+       addBusDto = typeof busDataString === 'string' ? JSON.parse(busDataString) : busDataString;
+    } catch (error) {
+       throw new BadRequestException('Invalid busData format');
+    }
+
+    if (file) {
+      const photoUrl = `/uploads/buses/${file.filename}`;
+      if (!addBusDto.documents) {
+        addBusDto.documents = {};
+      }
+      addBusDto.documents.frontViewUrl = photoUrl;
+    }
+
     return await this.busService.addBus(authenticatedUser.userId, addBusDto);
   }
 
@@ -274,6 +318,11 @@ export class BusController {
   @UseGuards(JwtAuthGuard)
   async getRoutinesByDriver(@Param('driverId') driverId: string) {
     return await this.busService.getRoutinesByDriver(driverId);
+  }
+
+  @Get('routines/approved')
+  async getApprovedRoutines() {
+    return await this.busService.getApprovedRoutines();
   }
 
   @Get('routines/bus/:busId')
