@@ -131,5 +131,12 @@ export class AddBusDto {
 
   @IsObject()
   @IsOptional()
+  @IsObject()
+  @IsOptional()
   documents?: BusDocuments;
+
+  @IsArray()
+  @IsOptional()
+  @IsString({ each: true })
+  customFeatures?: string[];
 }

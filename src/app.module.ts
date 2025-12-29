@@ -7,11 +7,17 @@ import { FirebaseModule } from './firebase/firebase.module';
 import { BusModule } from './bus/bus.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { InquiryModule } from './inquiry/inquiry.module';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+    }),
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'uploads'),
+      serveRoot: '/uploads',
     }),
     FirebaseModule,
     AuthModule,

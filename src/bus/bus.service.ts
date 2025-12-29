@@ -234,7 +234,8 @@ export class BusService {
           isLegacy: true,
         });
       }
-    });
+
+});
 
     // 2. New Buses
     const busesRef = firestore.collection('buses');
@@ -872,18 +873,22 @@ export class BusService {
 
     // Verify bus exists
     const busDoc = await firestore
-      .collection('users')
+      .collection('buses')
       .doc(requestData.busId)
       .get();
+      
     if (!busDoc.exists) {
       throw new NotFoundException('Bus not found');
     }
+
+    const busData = busDoc.data();
 
     // Create hire request
     const requestRef = firestore.collection('hireRequests').doc();
     await requestRef.set({
       id: requestRef.id,
       ...requestData,
+      driverId: busData?.driverId, // Ensure driverId is linked
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -904,18 +909,31 @@ export class BusService {
     if (role === 'passenger') {
       query = requestsRef.where('userId', '==', userId);
     } else {
-      // For driver, get requests for their bus
-      query = requestsRef.where('busId', '==', userId);
+      // For driver, get requests where they are the driver
+      query = requestsRef.where('driverId', '==', userId);
     }
 
-    const snapshot = await query.orderBy('createdAt', 'desc').get();
+    let snapshot;
+    try {
+      snapshot = await query.orderBy('createdAt', 'desc').get();
+    } catch (e) {
+      console.warn('Index missing, falling back to unordered query');
+      snapshot = await query.get();
+    }
 
-    const requests = [];
+    const requests: any[] = [];
     snapshot.forEach((doc) => {
       requests.push({
         id: doc.id,
         ...doc.data(),
       });
+    });
+    
+    // Ensure sorted (needed if fallback used)
+    requests.sort((a, b) => {
+        const dateA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt).getTime();
+        const dateB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt).getTime();
+        return dateB - dateA;
     });
 
     return requests;
@@ -1177,6 +1195,8 @@ export class BusService {
       updatedAt: new Date(),
     };
 
+    console.log('📝 Creating Routine Payload:', JSON.stringify(newRoutine, null, 2));
+
     const docRef = await routinesRef.add(newRoutine);
 
     console.log(`✅ Routine created with ID: ${docRef.id}`);
@@ -1329,6 +1349,82 @@ export class BusService {
       return routines;
     }
   }
+
+  async getApprovedRoutines() {
+    const firestore = this.firebaseService.getFirestore();
+    const routinesRef = firestore.collection('routines');
+
+    try {
+      const snapshot = await routinesRef
+        .where('status', '==', 'approved')
+        .orderBy('createdAt', 'desc')
+        .get();
+
+      const routines: any[] = [];
+      const busIds = new Set<string>();
+
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        busIds.add(data.busId);
+        routines.push({
+          id: doc.id,
+          ...data,
+        });
+      });
+
+      // Fetch details for all relevant buses
+      const busDetailsMap = new Map();
+      if (busIds.size > 0) {
+        // Firestore 'in' query supports up to 10 items. For robustness, we'll fetch individually or ideally allow up to 10 batches.
+        // For simplicity/safety with larger sets, let's fetch individual user docs concurrently or use batches.
+        // Given potentially many buses, fetching individually with Promise.all is reasonable for now if not massive scale.
+        const busPromises = Array.from(busIds).map(async (busId) => {
+            const userDoc = await firestore.collection('users').doc(busId).get();
+            if (userDoc.exists) {
+                const userData = userDoc.data();
+                return { 
+                    busId, 
+                    busName: userData.busDetails?.busName || 'Unknown Bus',
+                    busNumber: userData.busDetails?.busNumber || 'N/A',
+                    driverName: userData.displayName || 'Unknown Driver'
+                };
+            }
+            return null;
+        });
+
+        const buses = await Promise.all(busPromises);
+        buses.forEach(bus => {
+            if (bus) {
+                busDetailsMap.set(bus.busId, bus);
+            }
+        });
+      }
+
+      // Attach bus details to routines
+      const enrichedRoutines = routines.map(routine => ({
+          ...routine,
+          busDetails: busDetailsMap.get(routine.busId) || { busName: 'Unknown', busNumber: 'N/A', driverName: 'Unknown' }
+      }));
+
+      console.log(`✅ [getApprovedRoutines] Found ${enrichedRoutines.length} routines.`);
+      return enrichedRoutines;
+    } catch (error) {
+      console.warn('🔥 [getApprovedRoutines] Primary query failed (index?), running fallback:', error.message);
+      const snapshot = await routinesRef
+        .where('status', '==', 'approved')
+        .get();
+
+      const routines: any[] = [];
+      snapshot.forEach((doc) => {
+        routines.push({
+          id: doc.id,
+          ...doc.data(),
+        });
+      });
+      return routines;
+    }
+  }
+
 
   async updateRoutine(routineId: string, updateData: any) {
     const firestore = this.firebaseService.getFirestore();
@@ -2373,3 +2469,4 @@ export class BusService {
     return { success: true };
   }
 }
+
