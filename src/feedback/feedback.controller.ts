@@ -18,7 +18,15 @@ export class FeedbackController {
   @Post()
   @UseGuards(JwtAuthGuard)
   async submitFeedback(
-    @Body() feedbackData: { message: string; rating?: number },
+    @Body() feedbackData: { 
+      message: string; 
+      rating?: number;
+      bookingId?: string;
+      busId?: string;
+      driverId?: string;
+      route?: string;
+      travelDate?: string;
+    },
     @Req() req: Request,
   ) {
     const authenticatedUser = req.user as { userId: string; email: string };
@@ -32,6 +40,12 @@ export class FeedbackController {
   @UseGuards(JwtAuthGuard)
   async getUserFeedback(@Param('userId') userId: string) {
     return await this.feedbackService.getUserFeedback(userId);
+  }
+
+  @Get('driver/:driverId')
+  @UseGuards(JwtAuthGuard)
+  async getDriverFeedback(@Param('driverId') driverId: string) {
+    return await this.feedbackService.getDriverFeedback(driverId);
   }
 
   @Get('all')
