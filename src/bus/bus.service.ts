@@ -1519,8 +1519,8 @@ export class BusService {
     const routines = [];
     routinesSnapshot.forEach((doc) => {
       const data = doc.data();
-      // Filter routines that are scheduled for this day
-      if (data.daysOfWeek && data.daysOfWeek.includes(dayOfWeek)) {
+      // Filter routines that are scheduled for this day (case-insensitive)
+      if (data.daysOfWeek && data.daysOfWeek.some((d: string) => d.toLowerCase() === dayOfWeek.toLowerCase())) {
         routines.push({
           id: doc.id,
           ...data,
@@ -2410,6 +2410,29 @@ export class BusService {
         // If no location data, we assume the bus hasn't started or is scheduled.
         const status = currentLocation ? 'on-route' : 'scheduled';
 
+        // Fetch approved routines for this driver to get time slot info
+        let routineTimeSlot = null;
+        try {
+          const routinesSnapshot = await firestore
+            .collection('routines')
+            .where('driverId', '==', bookingData.busId)
+            .where('status', '==', 'approved')
+            .get();
+          
+          const now = new Date();
+          const todayDayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
+          
+          for (const routineDoc of routinesSnapshot.docs) {
+            const routineData = routineDoc.data();
+            if (routineData.daysOfWeek && routineData.daysOfWeek.some((d: string) => d.toLowerCase() === todayDayOfWeek.toLowerCase())) {
+              routineTimeSlot = routineData.timeSlot || null;
+              break;
+            }
+          }
+        } catch (err) {
+          console.error('Failed to fetch routine time slot for bus:', bookingData.busId, err);
+        }
+
         // Create trackable bus object
         const trackableBus = {
           id: bookingData.busId,
@@ -2424,7 +2447,8 @@ export class BusService {
           driverPhone: driverData.phoneNumber || '',
           bookingId: bookingDoc.id,
           travelDate: bookingData.travelDate?.toDate?.() || bookingData.travelDate,
-          departureTime: bookingData.departureTime || 'TBD'
+          departureTime: bookingData.departureTime || 'TBD',
+          routineTimeSlot: routineTimeSlot,
         };
 
         trackableBusesMap.set(bookingData.busId, trackableBus);
