@@ -10,6 +10,85 @@ import * as admin from 'firebase-admin';
 
 @Injectable()
 export class BusService {
+  async getAdminDashboardStats() {
+    const firestore = this.firebaseService.getFirestore();
+    
+    // 1. Total Buses (Approved)
+    const busesRef = firestore.collection('buses');
+    const busesSnapshot = await busesRef.where('status', '==', BusStatus.APPROVED).get();
+    
+    const usersRef = firestore.collection('users');
+    const legacyBusesSnapshot = await usersRef
+      .where('userType', '==', 'driver')
+      .where('busDetails.status', '==', BusStatus.APPROVED)
+      .get();
+    
+    const totalBuses = busesSnapshot.size + legacyBusesSnapshot.size;
+
+    // 2. Active Trips
+    const tripsRef = firestore.collection('trips');
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dateStr = today.toISOString().split('T')[0];
+    let activeTrips = 0;
+    try {
+        // Query trips from today onwards
+        const tripsSnapshot = await tripsRef.where('travelDate', '>=', dateStr).get();
+        activeTrips = tripsSnapshot.size;
+    } catch(e) {
+        // Catch index issues
+        console.error(e);
+    }
+
+    // 3. Total Bookings & Revenue
+    const bookingsRef = firestore.collection('bookings');
+    let totalBookings = 0;
+    let revenue = 0;
+    const monthlyDataMap = new Map();
+
+    // Initialize last 6 months
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+        let d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const monthName = monthNames[d.getMonth()];
+        monthlyDataMap.set(monthName, { month: monthName, revenue: 0, bookings: 0 });
+    }
+
+    try {
+        const bookingsSnapshot = await bookingsRef.where('status', '==', 'confirmed').get();
+        bookingsSnapshot.forEach(doc => {
+          const data = doc.data();
+          totalBookings++;
+          const price = data.totalPrice || 0;
+          revenue += price;
+          
+          let bookedAtDate = new Date();
+          if (data.bookedAt) {
+              bookedAtDate = data.bookedAt.toDate ? data.bookedAt.toDate() : new Date(data.bookedAt);
+          }
+          
+          const monthName = monthNames[bookedAtDate.getMonth()];
+          if (monthlyDataMap.has(monthName)) {
+              monthlyDataMap.get(monthName).revenue += price;
+              monthlyDataMap.get(monthName).bookings += 1;
+          }
+        });
+    } catch(e) {
+        console.error(e);
+    }
+
+    return {
+      summaryData: {
+        totalBuses,
+        activeTrips,
+        totalBookings,
+        revenue
+      },
+      chartData: Array.from(monthlyDataMap.values())
+    };
+  }
+
   constructor(private firebaseService: FirebaseService) {}
 
   async getPendingBusRegistrations() {
