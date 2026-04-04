@@ -1724,7 +1724,7 @@ export class BusService implements OnModuleInit {
 
   // ==================== PASSENGER SEARCH WITH SCHEDULES ====================
 
-  async searchBusesWithSchedules(route: string, date: string) {
+  async searchBusesWithSchedules(route: string, date: string, departureTime?: string) {
     const firestore = this.firebaseService.getFirestore();
     const dayOfWeek = new Date(date).toLocaleDateString('en-US', {
       weekday: 'long',
@@ -1752,6 +1752,31 @@ export class BusService implements OnModuleInit {
         routineData.daysOfWeek && routineData.daysOfWeek.includes(dayOfWeek);
 
       if (routeMatches && dayMatches) {
+        // --- Departure Time Filter (Sri Lankan Time) ---
+        if (departureTime && routineData.timeSlot?.startTime && routineData.timeSlot?.endTime) {
+          try {
+            const baseDate = '2026-04-04'; // Use a dummy date for time comparison
+            const depMoment = moment.tz(`${baseDate} ${departureTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+            const startMoment = moment.tz(`${baseDate} ${routineData.timeSlot.startTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+            let endMoment = moment.tz(`${baseDate} ${routineData.timeSlot.endTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+
+            if (endMoment.isBefore(startMoment)) {
+              endMoment.add(1, 'day');
+              // If departure time is in the early hours of the next day, adjust it for the range check
+              if (depMoment.hour() < startMoment.hour()) {
+                depMoment.add(1, 'day');
+              }
+            }
+
+            if (!depMoment.isBetween(startMoment, endMoment, null, '[]')) {
+              console.log(`[Search] Routine ${doc.id} skipped: ${departureTime} is outside ${routineData.timeSlot.startTime}-${routineData.timeSlot.endTime}`);
+              continue;
+            }
+          } catch (err) {
+            console.error('[Search] Error comparing times:', err);
+          }
+        }
+
         // Check daily availability
         const dailyScheduleRef = firestore
           .collection('dailySchedules')
