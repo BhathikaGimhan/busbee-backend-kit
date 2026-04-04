@@ -15,7 +15,12 @@ export class BusService implements OnModuleInit {
   // In-memory cache for trackable buses to avoid hammering Firestore
   // Key: passengerId, Value: { result, expiresAt }
   private trackableBusesCache = new Map<string, { result: any[]; expiresAt: number }>();
-  private static TRACKER_CACHE_TTL_MS = 30_000; // 30 seconds
+
+  // Global high-performance location cache (shared across all passengers)
+  // Key: busId or driverId, Value: { lat, lng, updatedAt }
+  private static GLOBAL_BUS_LOCATION_CACHE = new Map<string, any>();
+
+  private static TRACKER_CACHE_TTL_MS = 600_000; // 10 minutes (upgraded from 30s)
 
   async getAdminDashboardStats() {
     const firestore = this.firebaseService.getFirestore();
@@ -2599,7 +2604,7 @@ export class BusService implements OnModuleInit {
 
         const driverData = driverDoc.data();
         let busDetails = driverData.busDetails;
-        let currentLocation = busDetails?.currentLocation ?? null;
+        let currentLocation = BusService.GLOBAL_BUS_LOCATION_CACHE.get(driverId) ?? busDetails?.currentLocation ?? null;
         let busId = driverId; // legacy: busId = driverId
 
         // Also check if there's a new-style bus in 'buses' collection for this driver
@@ -2615,9 +2620,14 @@ export class BusService implements OnModuleInit {
           const newBusDoc = newBusSnapshot.docs[0];
           const newBusData = newBusDoc.data();
           busId = newBusDoc.id;
+          
+          // Check global cache using new busId as well
+          const cachedLocation = BusService.GLOBAL_BUS_LOCATION_CACHE.get(busId);
+          if (cachedLocation) currentLocation = cachedLocation;
+
           // Use new bus details, preferring new-style currentLocation if it exists
           if (!busDetails) busDetails = newBusData;
-          if (newBusData.currentLocation) currentLocation = newBusData.currentLocation;
+          if (!cachedLocation && newBusData.currentLocation) currentLocation = newBusData.currentLocation;
         }
 
         if (!busDetails) {
@@ -2673,8 +2683,12 @@ export class BusService implements OnModuleInit {
     location: { lat: number; lng: number; heading?: number; speed?: number },
   ) {
     const firestore = this.firebaseService.getFirestore();
-    console.log(`[LocationUpdate] Received update for busId: ${busId} | lat: ${location.lat}, lng: ${location.lng}`);
-    
+    // Update high-performance global cache instantly
+    BusService.GLOBAL_BUS_LOCATION_CACHE.set(busId, {
+        ...location,
+        updatedAt: Date.now()
+    });
+
     const busRef = firestore.collection('buses').doc(busId);
     const busDoc = await busRef.get();
 
