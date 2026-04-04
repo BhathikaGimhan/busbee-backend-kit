@@ -28,6 +28,11 @@ import { AddBusDto } from './dto/add-bus.dto';
 
 @Controller('bus')
 export class BusController {
+  @Get('admin/dashboard/stats')
+  async getAdminDashboardStats() {
+    return await this.busService.getAdminDashboardStats();
+  }
+
   constructor(
     private readonly busService: BusService,
     private readonly firebaseService: FirebaseService,
