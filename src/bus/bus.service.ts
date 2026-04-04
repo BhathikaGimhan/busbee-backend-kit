@@ -2,14 +2,26 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { FirebaseService } from '../firebase/firebase.service';
 import { BusStatus } from '../auth/dto/register.dto';
 import { AddBusDto } from './dto/add-bus.dto';
 import * as admin from 'firebase-admin';
+import * as moment from 'moment-timezone';
 
 @Injectable()
-export class BusService {
+export class BusService implements OnModuleInit {
+  // In-memory cache for trackable buses to avoid hammering Firestore
+  // Key: passengerId, Value: { result, expiresAt }
+  private trackableBusesCache = new Map<string, { result: any[]; expiresAt: number }>();
+
+  // Global high-performance location cache (shared across all passengers)
+  // Key: busId or driverId, Value: { lat, lng, updatedAt }
+  private static GLOBAL_BUS_LOCATION_CACHE = new Map<string, any>();
+
+  private static TRACKER_CACHE_TTL_MS = 600_000; // 10 minutes (upgraded from 30s)
+
   async getAdminDashboardStats() {
     const firestore = this.firebaseService.getFirestore();
     
@@ -90,6 +102,25 @@ export class BusService {
   }
 
   constructor(private firebaseService: FirebaseService) {}
+
+  onModuleInit() {
+    // Periodically clean up expired cache entries (every 10 minutes)
+    // This prevents the trackableBusesCache from growing indefinitely 
+    // if users only call it once.
+    setInterval(() => {
+      const now = Date.now();
+      let deleteCount = 0;
+      for (const [key, value] of this.trackableBusesCache.entries()) {
+        if (now > value.expiresAt) {
+          this.trackableBusesCache.delete(key);
+          deleteCount++;
+        }
+      }
+      if (deleteCount > 0) {
+        console.log(`[CacheCleanup] Pruned ${deleteCount} expired entries from trackableBusesCache`);
+      }
+    }, 600000); // 10 minutes
+  }
 
   async getPendingBusRegistrations() {
     const firestore = this.firebaseService.getFirestore();
@@ -1614,14 +1645,32 @@ export class BusService {
         .doc(`${routine.id}_${date}`);
 
       const dailyDoc = await dailyStatusRef.get();
-      const dailyStatus = dailyDoc.exists ? dailyDoc.data() : null;
+      const dailyStatus = dailyDoc.exists ? dailyDoc.data() : { availability: 'available', date };
+
+      // Calculate if this routine is currently active (SL time)
+      const slNow = moment.tz('Asia/Colombo');
+      const [startH, startM] = routine.timeSlot.startTime.split(':').map(Number);
+      const [endH, endM] = routine.timeSlot.endTime.split(':').map(Number);
+
+      const startTime = moment.tz('Asia/Colombo').set({ hour: startH, minute: startM, second: 0, millisecond: 0 });
+      let endTime = moment.tz('Asia/Colombo').set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
+      
+      if (endTime.isBefore(startTime)) {
+        endTime.add(1, 'day'); // Handle overnight routines
+      }
+
+      // Buffer: consider it active 15 mins before and 15 mins after
+      const isActive = dailyStatus.availability === 'started' || 
+                      (dailyStatus.availability === 'available' && 
+                       slNow.isBetween(startTime.clone().subtract(15, 'minutes'), endTime.clone().add(15, 'minutes')));
+
+      const isUpcoming = dailyStatus.availability === 'available' && slNow.isBefore(startTime);
 
       return {
         ...routine,
-        dailyStatus: dailyStatus || {
-          availability: 'available',
-          date,
-        },
+        isActive,
+        isUpcoming,
+        dailyStatus,
       };
     });
 
@@ -1675,7 +1724,7 @@ export class BusService {
 
   // ==================== PASSENGER SEARCH WITH SCHEDULES ====================
 
-  async searchBusesWithSchedules(route: string, date: string) {
+  async searchBusesWithSchedules(route: string, date: string, departureTime?: string) {
     const firestore = this.firebaseService.getFirestore();
     const dayOfWeek = new Date(date).toLocaleDateString('en-US', {
       weekday: 'long',
@@ -1698,11 +1747,37 @@ export class BusService {
         routineData.route?.toLowerCase().includes(route.toLowerCase()) ||
         route.toLowerCase().includes(routineData.route?.toLowerCase() || '');
 
-      // Check if day matches
-      const dayMatches =
-        routineData.daysOfWeek && routineData.daysOfWeek.includes(dayOfWeek);
+      // Check if day matches (case-insensitive)
+      const dayMatches = routineData.daysOfWeek?.some(
+        (day: string) => day.toLowerCase() === dayOfWeek.toLowerCase(),
+      );
 
       if (routeMatches && dayMatches) {
+        // --- Departure Time Filter (Sri Lankan Time) ---
+        if (departureTime && routineData.timeSlot?.startTime && routineData.timeSlot?.endTime) {
+          try {
+            const baseDate = '2026-04-04'; // Use a dummy date for time comparison
+            const depMoment = moment.tz(`${baseDate} ${departureTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+            const startMoment = moment.tz(`${baseDate} ${routineData.timeSlot.startTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+            let endMoment = moment.tz(`${baseDate} ${routineData.timeSlot.endTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+
+            if (endMoment.isBefore(startMoment)) {
+              endMoment.add(1, 'day');
+              // If departure time is in the early hours of the next day, adjust it for the range check
+              if (depMoment.hour() < startMoment.hour()) {
+                depMoment.add(1, 'day');
+              }
+            }
+
+            if (!depMoment.isBetween(startMoment, endMoment, null, '[]')) {
+              console.log(`[Search] Routine ${doc.id} skipped: ${departureTime} is outside ${routineData.timeSlot.startTime}-${routineData.timeSlot.endTime}`);
+              continue;
+            }
+          } catch (err) {
+            console.error('[Search] Error comparing times:', err);
+          }
+        }
+
         // Check daily availability
         const dailyScheduleRef = firestore
           .collection('dailySchedules')
@@ -2434,113 +2509,198 @@ export class BusService {
   async getTrackableBuses(passengerId: string) {
     const firestore = this.firebaseService.getFirestore();
 
-    try {
-      // Get all bookings for the passenger
-      const bookingsRef = firestore.collection('bookings');
-    
-    // Look for bookings from yesterday onwards to handle timezone differences
-    // and ensuring we catch ongoing trips that might have started "yesterday" in UTC but are still active.
-    const searchDate = new Date();
-    searchDate.setDate(searchDate.getDate() - 1);
-    searchDate.setHours(0, 0, 0, 0);
+    // ---- In-memory cache check ----
+    const cached = this.trackableBusesCache.get(passengerId);
+    if (cached && Date.now() < cached.expiresAt) {
+      console.log(`[Tracker] Cache HIT for passenger ${passengerId}. Returning cached result.`);
+      return cached.result;
+    }
 
-    const bookingsSnapshot = await bookingsRef
-      .where('userId', '==', passengerId)
-      .get();
-      
-      const trackableBusesMap = new Map();
+    try {
+      console.log(`[Tracker] Cache MISS — Fetching live data for passenger: ${passengerId}`);
+
+      // Step 1: Get only CONFIRMED bookings for this passenger
+      const bookingsSnapshot = await firestore
+        .collection('bookings')
+        .where('userId', '==', passengerId)
+        .where('status', '==', 'confirmed')
+        .get();
+
+      console.log(`[Tracker] Found ${bookingsSnapshot.docs.length} confirmed bookings.`);
+
+      // Compute current time in Sri Lanka / IST timezone (UTC+5:30)
+      // The backend server runs in UTC; routine times are stored in local Sri Lanka time
+      const now = new Date();
+      const SL_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
+      const nowSL = new Date(now.getTime() + SL_OFFSET_MS);
+
+      const year = nowSL.getUTCFullYear();
+      const month = String(nowSL.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(nowSL.getUTCDate()).padStart(2, '0');
+      const todayStr = `${year}-${month}-${day}`;
+      // Use SL time for day-of-week (so the query matches routine's daysOfWeek correctly)
+      const todayDayOfWeek = nowSL.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Asia/Colombo' });
+      const slHours = nowSL.getUTCHours();
+      const slMinutes = nowSL.getUTCMinutes();
+
+      console.log(`[Tracker] Today: ${todayStr} (${todayDayOfWeek}), SL time: ${slHours}:${String(slMinutes).padStart(2,'0')}`);
+
+      // Helper: check if current SL local time is within a routine time window "HH:MM"
+      const isWithinTimeWindow = (startTime: string, endTime: string): boolean => {
+        const [sh, sm] = startTime.split(':').map(Number);
+        const [eh, em] = endTime.split(':').map(Number);
+        const currentMinutes = slHours * 60 + slMinutes;
+        const startMinutes = sh * 60 + sm;
+        let endMinutes = eh * 60 + em;
+        if (endMinutes <= startMinutes) endMinutes += 24 * 60; // overnight
+        return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+      };
+
+      // Use a Map keyed by driverId to de-duplicate (one entry per driver/bus)
+      const trackableBusesMap = new Map<string, any>();
 
       for (const bookingDoc of bookingsSnapshot.docs) {
         const bookingData = bookingDoc.data();
-        const bStatus = bookingData.status;
-        const bDate = bookingData.travelDate?.toDate ? bookingData.travelDate.toDate() : new Date(bookingData.travelDate);
-        
-        if (!['confirmed', 'pending'].includes(bStatus)) {
-            continue;
-        }
+        // bookingData.busId is actually the DRIVER's userId (legacy system)
+        const driverId = bookingData.busId;
 
-        if (bDate < searchDate) {
-            continue;
-        }
-        
-        // Avoid re-fetching/processing if we already have this bus
-        if (trackableBusesMap.has(bookingData.busId)) {
-            continue;
-        }
+        // Skip if we already processed this driver
+        if (trackableBusesMap.has(driverId)) continue;
 
-        // Get bus details from the driver (busId is the driver's userId)
-        const driverDoc = await firestore.collection('users').doc(bookingData.busId).get();
+        // Step 2: Get the driver's approved routines scheduled for today
+        const routinesSnapshot = await firestore
+          .collection('routines')
+          .where('driverId', '==', driverId)
+          .where('status', '==', 'approved')
+          .get();
 
-        if (!driverDoc.exists) {
-           continue;
-        }
-        
-        const driverData = driverDoc.data();
-        if (!driverData.busDetails) {
-           continue;
-        }
-        
-        const busDetails = driverData.busDetails;
-        const currentLocation = busDetails?.currentLocation;
-        
-        // Check if the location is stale? (Optional, but good practice. For now, assume if it exists, it's valid).
-        
-        // Determine status based on live data availability
-        // If no location data, we assume the bus hasn't started or is scheduled.
-        const status = currentLocation ? 'on-route' : 'scheduled';
+        let startedRoutine: any = null;
 
-        // Fetch approved routines for this driver to get time slot info
-        let routineTimeSlot = null;
-        try {
-          const routinesSnapshot = await firestore
-            .collection('routines')
-            .where('driverId', '==', bookingData.busId)
-            .where('status', '==', 'approved')
+        for (const routineDoc of routinesSnapshot.docs) {
+          const routineData = routineDoc.data();
+
+          // Check if this routine is scheduled for today
+          const isToday = routineData.daysOfWeek &&
+            routineData.daysOfWeek.some((d: string) => d.toLowerCase() === todayDayOfWeek.toLowerCase());
+
+          if (!isToday) continue;
+
+          // Step 3: Check dailySchedules for explicit started/unavailable/completed status
+          const dailyStatusDoc = await firestore
+            .collection('dailySchedules')
+            .doc(`${routineDoc.id}_${todayStr}`)
             .get();
-          
-          const now = new Date();
-          const todayDayOfWeek = now.toLocaleDateString('en-US', { weekday: 'long' });
-          
-          for (const routineDoc of routinesSnapshot.docs) {
-            const routineData = routineDoc.data();
-            if (routineData.daysOfWeek && routineData.daysOfWeek.some((d: string) => d.toLowerCase() === todayDayOfWeek.toLowerCase())) {
-              routineTimeSlot = routineData.timeSlot || null;
-              break;
-            }
+
+          const dailyStatus = dailyStatusDoc.exists
+            ? dailyStatusDoc.data()
+            : { availability: 'available' };
+
+          const availability = dailyStatus?.availability || 'available';
+
+          // Skip if driver explicitly marked unavailable or completed
+          if (availability === 'unavailable' || availability === 'completed') continue;
+
+          // ✅ DUAL CHECK:
+          // 1. Driver explicitly started the routine via TodaySchedule UI
+          const isExplicitlyStarted = availability === 'started';
+
+          // 2. OR: current time falls within the scheduled time window (bus is active by schedule)
+          const timeWindow = routineData.timeSlot;
+          const isWithinWindow = timeWindow
+            ? isWithinTimeWindow(timeWindow.startTime, timeWindow.endTime)
+            : false;
+
+          console.log(`[Tracker] Routine ${routineDoc.id} | availability: ${availability} | withinWindow: ${isWithinWindow} | window: ${timeWindow?.startTime}-${timeWindow?.endTime}`);
+
+          if (isExplicitlyStarted || isWithinWindow) {
+            startedRoutine = { id: routineDoc.id, ...routineData };
+            break;
           }
-        } catch (err) {
-          console.error('Failed to fetch routine time slot for bus:', bookingData.busId, err);
         }
 
-        // Create trackable bus object
+        if (!startedRoutine) continue;
+
+        // Step 4: Get the driver's bus details and LIVE location
+        // In this system, busId === driverId (legacy), so location is at users/{driverId}.busDetails.currentLocation
+        const driverDoc = await firestore.collection('users').doc(driverId).get();
+        if (!driverDoc.exists) {
+          console.log(`[Tracker] Driver user doc not found for ${driverId}`);
+          continue;
+        }
+
+        const driverData = driverDoc.data();
+        let busDetails = driverData.busDetails;
+        let currentLocation = BusService.GLOBAL_BUS_LOCATION_CACHE.get(driverId) ?? busDetails?.currentLocation ?? null;
+        let busId = driverId; // legacy: busId = driverId
+
+        // Also check if there's a new-style bus in 'buses' collection for this driver
+        // (which stores location separately)
+        const newBusSnapshot = await firestore
+          .collection('buses')
+          .where('driverId', '==', driverId)
+          .where('status', '==', 'approved')
+          .limit(1)
+          .get();
+
+        if (!newBusSnapshot.empty) {
+          const newBusDoc = newBusSnapshot.docs[0];
+          const newBusData = newBusDoc.data();
+          busId = newBusDoc.id;
+          
+          // Check global cache using new busId as well
+          const cachedLocation = BusService.GLOBAL_BUS_LOCATION_CACHE.get(busId);
+          if (cachedLocation) currentLocation = cachedLocation;
+
+          // Use new bus details, preferring new-style currentLocation if it exists
+          if (!busDetails) busDetails = newBusData;
+          if (!cachedLocation && newBusData.currentLocation) currentLocation = newBusData.currentLocation;
+        }
+
+        if (!busDetails) {
+          console.log(`[Tracker] No bus details found for driver ${driverId}`);
+          continue;
+        }
+
+        console.log(`[Tracker] ✅ Bus ${busDetails.busNumber} | driverId: ${driverId} | currentLocation: ${JSON.stringify(currentLocation)}`);
+
         const trackableBus = {
-          id: bookingData.busId,
-          busName: busDetails.busName,
-          busNumber: busDetails.busNumber,
-          route: busDetails.route,
-          currentLocation: currentLocation, // Pass the object or string
-          coordinates: (currentLocation && typeof currentLocation === 'object' && 'lat' in currentLocation) ? currentLocation : undefined,
-          estimatedArrival: 'Calculating...', // Could be enhanced with Distance Matrix later
-          status: status,
-          driverName: driverData.displayName || 'Unknown Driver',
-          driverPhone: driverData.phoneNumber || '',
+          id: busId,
+          busName: busDetails.busName || 'Unknown Bus',
+          busNumber: busDetails.busNumber || 'N/A',
+          route: startedRoutine.route || busDetails.route || 'Unknown Route',
+          currentLocation: currentLocation,
+          coordinates: (currentLocation && typeof currentLocation === 'object' && 'lat' in currentLocation)
+            ? { lat: currentLocation.lat, lng: currentLocation.lng }
+            : undefined,
+          status: 'on-route' as const,
+          driverName: driverData.displayName || driverData.name || 'Unknown Driver',
+          driverPhone: driverData.phoneNumber || driverData.phone || '',
           bookingId: bookingDoc.id,
           travelDate: bookingData.travelDate?.toDate?.() || bookingData.travelDate,
-          departureTime: bookingData.departureTime || 'TBD',
-          routineTimeSlot: routineTimeSlot,
+          routineTimeSlot: startedRoutine.timeSlot || null,
+          routineId: startedRoutine.id,
         };
 
-        trackableBusesMap.set(bookingData.busId, trackableBus);
+        trackableBusesMap.set(driverId, trackableBus);
       }
-    
-    console.log(`[DEBUG] Returning ${trackableBusesMap.size} trackable buses.`);
 
-      return Array.from(trackableBusesMap.values());
+      console.log(`[Tracker] Returning ${trackableBusesMap.size} active trackable buses.`);
+      const result = Array.from(trackableBusesMap.values());
+
+      // Store in cache for 30 seconds
+      this.trackableBusesCache.set(passengerId, {
+        result,
+        expiresAt: Date.now() + BusService.TRACKER_CACHE_TTL_MS,
+      });
+
+      return result;
+
     } catch (error) {
-      console.error('Error getting trackable buses:', error);
+      console.error('[Tracker] Error getting trackable buses:', error);
       throw new BadRequestException('Failed to get trackable buses');
     }
   }
+
 
   // ==================== LIVE LOCATION TRACKING ====================
 
@@ -2549,27 +2709,38 @@ export class BusService {
     location: { lat: number; lng: number; heading?: number; speed?: number },
   ) {
     const firestore = this.firebaseService.getFirestore();
-    
+    // Update high-performance global cache instantly
+    BusService.GLOBAL_BUS_LOCATION_CACHE.set(busId, {
+        ...location,
+        updatedAt: Date.now()
+    });
+
     const busRef = firestore.collection('buses').doc(busId);
     const busDoc = await busRef.get();
 
     if (busDoc.exists) {
+        console.log(`[LocationUpdate] Found new-style bus doc for busId: ${busId}. Updating 'buses' collection.`);
         await busRef.update({
             currentLocation: location,
             lastLocationUpdate: admin.firestore.FieldValue.serverTimestamp(),
         });
     } else {
+        console.log(`[LocationUpdate] No new-style bus found for busId: ${busId}. Checking 'users' collection.`);
         const userRef = firestore.collection('users').doc(busId);
         const userDoc = await userRef.get();
         
         if (userDoc.exists) {
+             console.log(`[LocationUpdate] Found driver/user doc for busId: ${busId}. Updating 'users' collection -> busDetails.currentLocation.`);
              await userRef.update({
                 'busDetails.currentLocation': location,
                 'busDetails.lastLocationUpdate': admin.firestore.FieldValue.serverTimestamp(),
             });
+        } else {
+             console.log(`[LocationUpdate] ERROR: Could not find any document (bus or user) to update location for busId: ${busId}`);
         }
     }
     return { success: true };
   }
+
 }
 

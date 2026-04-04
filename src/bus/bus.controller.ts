@@ -401,11 +401,12 @@ export class BusController {
   async searchBusesWithSchedules(
     @Query('route') route: string,
     @Query('date') date: string,
+    @Query('departureTime') departureTime?: string,
   ) {
     if (!route || !date) {
       throw new BadRequestException('Route and date are required');
     }
-    return await this.busService.searchBusesWithSchedules(route, date);
+    return await this.busService.searchBusesWithSchedules(route, date, departureTime);
   }
 
   // ==================== BUS PRICING ENDPOINTS ====================
