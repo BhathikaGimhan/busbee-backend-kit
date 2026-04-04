@@ -1747,9 +1747,10 @@ export class BusService implements OnModuleInit {
         routineData.route?.toLowerCase().includes(route.toLowerCase()) ||
         route.toLowerCase().includes(routineData.route?.toLowerCase() || '');
 
-      // Check if day matches
-      const dayMatches =
-        routineData.daysOfWeek && routineData.daysOfWeek.includes(dayOfWeek);
+      // Check if day matches (case-insensitive)
+      const dayMatches = routineData.daysOfWeek?.some(
+        (day: string) => day.toLowerCase() === dayOfWeek.toLowerCase(),
+      );
 
       if (routeMatches && dayMatches) {
         // --- Departure Time Filter (Sri Lankan Time) ---
