@@ -141,6 +141,26 @@ export class AuthService {
     }
   }
 
+  async findAllUsers(role?: string) {
+    try {
+      const firestore = this.firebaseService.getFirestore();
+      let query: admin.firestore.Query<admin.firestore.DocumentData> = firestore.collection('users');
+      
+      if (role) {
+        query = query.where('userType', '==', role);
+      }
+      
+      const snapshot = await query.get();
+      return snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      throw new Error('Failed to fetch users');
+    }
+  }
+
   private async signInWithEmailAndPassword(
     email: string,
     password: string,
