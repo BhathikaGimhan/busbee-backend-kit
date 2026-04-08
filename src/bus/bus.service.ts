@@ -1545,19 +1545,20 @@ export class BusService implements OnModuleInit {
       throw new NotFoundException('Routine not found');
     }
 
-    await routineRef.update({
-      ...updateData,
-      updatedAt: new Date(),
-    });
+      const routineData = routineDoc.data();
+      const finalUpdateData = {
+        ...updateData,
+        updatedAt: new Date(),
+      };
 
-    console.log(`✅ Routine ${routineId} updated`);
+      if (routineData.status === 'approved' || routineData.status === 'rejected') {
+        finalUpdateData.status = 'pending_approval';
+        if (routineData.status === 'approved') {
+          finalUpdateData.isUpdateRequested = true;
+        }
+      }
 
-    return {
-      message: 'Routine updated successfully',
-    };
-  }
-
-  async updateRoutineStatus(
+      await routineRef.update(finalUpdateData);
     routineId: string,
     status: string,
     rejectionReason?: string,
@@ -1573,9 +1574,7 @@ export class BusService implements OnModuleInit {
     const updateData: any = {
       status,
       updatedAt: new Date(),
-    };
-
-    if (status === 'approved') {
+        isUpdateRequested: false,
       updateData.approvedAt = new Date();
     } else if (status === 'rejected' && rejectionReason) {
       updateData.rejectionReason = rejectionReason;

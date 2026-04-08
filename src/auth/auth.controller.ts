@@ -72,4 +72,16 @@ export class AuthController {
   async getProfile(@Request() req) {
     return this.authService.validateUser(req.user.userId);
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('users')
+  async getAllUsers() {
+    return this.authService.findAllUsers();
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('users/:role')
+  async getUsersByRole(@Request() req) {
+    return this.authService.findAllUsers(req.params.role);
+  }
 }
