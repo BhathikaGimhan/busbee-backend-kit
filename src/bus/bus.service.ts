@@ -14,7 +14,10 @@ import * as moment from 'moment-timezone';
 export class BusService implements OnModuleInit {
   // In-memory cache for trackable buses to avoid hammering Firestore
   // Key: passengerId, Value: { result, expiresAt }
-  private trackableBusesCache = new Map<string, { result: any[]; expiresAt: number }>();
+  private trackableBusesCache = new Map<
+    string,
+    { result: any[]; expiresAt: number }
+  >();
 
   // Global high-performance location cache (shared across all passengers)
   // Key: busId or driverId, Value: { lat, lng, updatedAt }
@@ -24,17 +27,19 @@ export class BusService implements OnModuleInit {
 
   async getAdminDashboardStats() {
     const firestore = this.firebaseService.getFirestore();
-    
+
     // 1. Total Buses (Approved)
     const busesRef = firestore.collection('buses');
-    const busesSnapshot = await busesRef.where('status', '==', BusStatus.APPROVED).get();
-    
+    const busesSnapshot = await busesRef
+      .where('status', '==', BusStatus.APPROVED)
+      .get();
+
     const usersRef = firestore.collection('users');
     const legacyBusesSnapshot = await usersRef
       .where('userType', '==', 'driver')
       .where('busDetails.status', '==', BusStatus.APPROVED)
       .get();
-    
+
     const totalBuses = busesSnapshot.size + legacyBusesSnapshot.size;
 
     // 2. Active Trips
@@ -44,12 +49,14 @@ export class BusService implements OnModuleInit {
     const dateStr = today.toISOString().split('T')[0];
     let activeTrips = 0;
     try {
-        // Query trips from today onwards
-        const tripsSnapshot = await tripsRef.where('travelDate', '>=', dateStr).get();
-        activeTrips = tripsSnapshot.size;
-    } catch(e) {
-        // Catch index issues
-        console.error(e);
+      // Query trips from today onwards
+      const tripsSnapshot = await tripsRef
+        .where('travelDate', '>=', dateStr)
+        .get();
+      activeTrips = tripsSnapshot.size;
+    } catch (e) {
+      // Catch index issues
+      console.error(e);
     }
 
     // 3. Total Bookings & Revenue
@@ -59,35 +66,56 @@ export class BusService implements OnModuleInit {
     const monthlyDataMap = new Map();
 
     // Initialize last 6 months
-    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const monthNames = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     const now = new Date();
     for (let i = 5; i >= 0; i--) {
-        let d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const monthName = monthNames[d.getMonth()];
-        monthlyDataMap.set(monthName, { month: monthName, revenue: 0, bookings: 0 });
+      let d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const monthName = monthNames[d.getMonth()];
+      monthlyDataMap.set(monthName, {
+        month: monthName,
+        revenue: 0,
+        bookings: 0,
+      });
     }
 
     try {
-        const bookingsSnapshot = await bookingsRef.where('status', '==', 'confirmed').get();
-        bookingsSnapshot.forEach(doc => {
-          const data = doc.data();
-          totalBookings++;
-          const price = data.totalPrice || 0;
-          revenue += price;
-          
-          let bookedAtDate = new Date();
-          if (data.bookedAt) {
-              bookedAtDate = data.bookedAt.toDate ? data.bookedAt.toDate() : new Date(data.bookedAt);
-          }
-          
-          const monthName = monthNames[bookedAtDate.getMonth()];
-          if (monthlyDataMap.has(monthName)) {
-              monthlyDataMap.get(monthName).revenue += price;
-              monthlyDataMap.get(monthName).bookings += 1;
-          }
-        });
-    } catch(e) {
-        console.error(e);
+      const bookingsSnapshot = await bookingsRef
+        .where('status', '==', 'confirmed')
+        .get();
+      bookingsSnapshot.forEach((doc) => {
+        const data = doc.data();
+        totalBookings++;
+        const price = data.totalPrice || 0;
+        revenue += price;
+
+        let bookedAtDate = new Date();
+        if (data.bookedAt) {
+          bookedAtDate = data.bookedAt.toDate
+            ? data.bookedAt.toDate()
+            : new Date(data.bookedAt);
+        }
+
+        const monthName = monthNames[bookedAtDate.getMonth()];
+        if (monthlyDataMap.has(monthName)) {
+          monthlyDataMap.get(monthName).revenue += price;
+          monthlyDataMap.get(monthName).bookings += 1;
+        }
+      });
+    } catch (e) {
+      console.error(e);
     }
 
     return {
@@ -95,9 +123,9 @@ export class BusService implements OnModuleInit {
         totalBuses,
         activeTrips,
         totalBookings,
-        revenue
+        revenue,
       },
-      chartData: Array.from(monthlyDataMap.values())
+      chartData: Array.from(monthlyDataMap.values()),
     };
   }
 
@@ -105,7 +133,7 @@ export class BusService implements OnModuleInit {
 
   onModuleInit() {
     // Periodically clean up expired cache entries (every 10 minutes)
-    // This prevents the trackableBusesCache from growing indefinitely 
+    // This prevents the trackableBusesCache from growing indefinitely
     // if users only call it once.
     setInterval(() => {
       const now = Date.now();
@@ -117,7 +145,9 @@ export class BusService implements OnModuleInit {
         }
       }
       if (deleteCount > 0) {
-        console.log(`[CacheCleanup] Pruned ${deleteCount} expired entries from trackableBusesCache`);
+        console.log(
+          `[CacheCleanup] Pruned ${deleteCount} expired entries from trackableBusesCache`,
+        );
       }
     }, 600000); // 10 minutes
   }
@@ -162,12 +192,12 @@ export class BusService implements OnModuleInit {
       try {
         const driverDoc = await usersRef.doc(busData.driverId).get();
         if (driverDoc.exists) {
-            const driverData = driverDoc.data();
-            driverName = driverData.displayName;
-            driverEmail = driverData.email;
+          const driverData = driverDoc.data();
+          driverName = driverData.displayName;
+          driverEmail = driverData.email;
         }
       } catch (e) {
-          console.error(`Error fetching driver for bus ${doc.id}:`, e);
+        console.error(`Error fetching driver for bus ${doc.id}:`, e);
       }
 
       pendingBuses.push({
@@ -176,8 +206,8 @@ export class BusService implements OnModuleInit {
         userEmail: driverEmail,
         userDisplayName: driverName,
         busDetails: {
-            ...busData,
-            status: busData.status, // Ensure status is present in busDetails structure for frontend compatibility
+          ...busData,
+          status: busData.status, // Ensure status is present in busDetails structure for frontend compatibility
         },
         submittedAt: busData.submittedAt,
         isLegacy: false,
@@ -189,24 +219,27 @@ export class BusService implements OnModuleInit {
 
   async approveBusRegistration(id: string) {
     const firestore = this.firebaseService.getFirestore();
-    
+
     // Check if it's a legacy bus (userId) or new bus (busId)
     // We try 'users' collection first. If user exists and has a bus, we assume it's legacy approval if the bus is pending.
     // However, if the ID passed isn't a user ID, or user doesn't have pending bus, we check 'buses' collection.
-    
+
     const userRef = firestore.collection('users').doc(id);
     const userDoc = await userRef.get();
 
     if (userDoc.exists) {
-        const userData = userDoc.data();
-        if (userData?.busDetails && userData.busDetails.status === BusStatus.PENDING) {
-             // It is a legacy bus registration on the user profile
-            await userRef.update({
-                'busDetails.status': BusStatus.APPROVED,
-                'busDetails.approvedAt': new Date(),
-            });
-            return { message: 'Bus registration approved successfully (Legacy)' };
-        }
+      const userData = userDoc.data();
+      if (
+        userData?.busDetails &&
+        userData.busDetails.status === BusStatus.PENDING
+      ) {
+        // It is a legacy bus registration on the user profile
+        await userRef.update({
+          'busDetails.status': BusStatus.APPROVED,
+          'busDetails.approvedAt': new Date(),
+        });
+        return { message: 'Bus registration approved successfully (Legacy)' };
+      }
     }
 
     // If not a legacy bus, check 'buses' collection
@@ -214,11 +247,11 @@ export class BusService implements OnModuleInit {
     const busDoc = await busRef.get();
 
     if (busDoc.exists) {
-        await busRef.update({
-            status: BusStatus.APPROVED,
-            approvedAt: new Date(),
-        });
-        return { message: 'Bus registration approved successfully' };
+      await busRef.update({
+        status: BusStatus.APPROVED,
+        approvedAt: new Date(),
+      });
+      return { message: 'Bus registration approved successfully' };
     }
 
     throw new NotFoundException('Bus registration not found');
@@ -226,21 +259,24 @@ export class BusService implements OnModuleInit {
 
   async rejectBusRegistration(id: string, reason?: string) {
     const firestore = this.firebaseService.getFirestore();
-    
+
     // Check legacy first
     const userRef = firestore.collection('users').doc(id);
     const userDoc = await userRef.get();
 
     if (userDoc.exists) {
-        const userData = userDoc.data();
-        if (userData?.busDetails && userData.busDetails.status === BusStatus.PENDING) {
-             await userRef.update({
-                'busDetails.status': BusStatus.REJECTED,
-                'busDetails.rejectedAt': new Date(),
-                'busDetails.rejectionReason': reason || 'No reason provided',
-            });
-            return { message: 'Bus registration rejected (Legacy)' };
-        }
+      const userData = userDoc.data();
+      if (
+        userData?.busDetails &&
+        userData.busDetails.status === BusStatus.PENDING
+      ) {
+        await userRef.update({
+          'busDetails.status': BusStatus.REJECTED,
+          'busDetails.rejectedAt': new Date(),
+          'busDetails.rejectionReason': reason || 'No reason provided',
+        });
+        return { message: 'Bus registration rejected (Legacy)' };
+      }
     }
 
     // Check new buses
@@ -248,12 +284,12 @@ export class BusService implements OnModuleInit {
     const busDoc = await busRef.get();
 
     if (busDoc.exists) {
-        await busRef.update({
-            status: BusStatus.REJECTED,
-            rejectedAt: new Date(),
-            rejectionReason: reason || 'No reason provided',
-        });
-        return { message: 'Bus registration rejected' };
+      await busRef.update({
+        status: BusStatus.REJECTED,
+        rejectedAt: new Date(),
+        rejectionReason: reason || 'No reason provided',
+      });
+      return { message: 'Bus registration rejected' };
     }
 
     throw new NotFoundException('Bus registration not found');
@@ -291,31 +327,31 @@ export class BusService implements OnModuleInit {
       .get();
 
     for (const doc of busesSnapshot.docs) {
-       const busData = doc.data();
-        let driverName = 'Unknown';
-        let driverEmail = '';
-        try {
-            const driverDoc = await usersRef.doc(busData.driverId).get();
-            if (driverDoc.exists) {
-                const driverData = driverDoc.data();
-                driverName = driverData.displayName;
-                driverEmail = driverData.email;
-            }
-        } catch (e) {
-            console.error(`Error fetching driver for bus ${doc.id}:`, e);
+      const busData = doc.data();
+      let driverName = 'Unknown';
+      let driverEmail = '';
+      try {
+        const driverDoc = await usersRef.doc(busData.driverId).get();
+        if (driverDoc.exists) {
+          const driverData = driverDoc.data();
+          driverName = driverData.displayName;
+          driverEmail = driverData.email;
         }
+      } catch (e) {
+        console.error(`Error fetching driver for bus ${doc.id}:`, e);
+      }
 
-       approvedBuses.push({
-          id: doc.id,
-          userId: busData.driverId,
-          userEmail: driverEmail,
-          userDisplayName: driverName,
-          busDetails: {
-              ...busData,
-              status: busData.status,
-          },
-          isLegacy: false,
-       });
+      approvedBuses.push({
+        id: doc.id,
+        userId: busData.driverId,
+        userEmail: driverEmail,
+        userDisplayName: driverName,
+        busDetails: {
+          ...busData,
+          status: busData.status,
+        },
+        isLegacy: false,
+      });
     }
 
     return approvedBuses;
@@ -344,8 +380,7 @@ export class BusService implements OnModuleInit {
           isLegacy: true,
         });
       }
-
-});
+    });
 
     // 2. New Buses
     const busesRef = firestore.collection('buses');
@@ -353,32 +388,32 @@ export class BusService implements OnModuleInit {
       .where('status', '==', BusStatus.REJECTED)
       .get();
 
-     for (const doc of busesSnapshot.docs) {
-       const busData = doc.data();
-        let driverName = 'Unknown';
-        let driverEmail = '';
-        try {
-            const driverDoc = await usersRef.doc(busData.driverId).get();
-            if (driverDoc.exists) {
-                const driverData = driverDoc.data();
-                driverName = driverData.displayName;
-                driverEmail = driverData.email;
-            }
-        } catch (e) {
-            console.error(`Error fetching driver for bus ${doc.id}:`, e);
+    for (const doc of busesSnapshot.docs) {
+      const busData = doc.data();
+      let driverName = 'Unknown';
+      let driverEmail = '';
+      try {
+        const driverDoc = await usersRef.doc(busData.driverId).get();
+        if (driverDoc.exists) {
+          const driverData = driverDoc.data();
+          driverName = driverData.displayName;
+          driverEmail = driverData.email;
         }
+      } catch (e) {
+        console.error(`Error fetching driver for bus ${doc.id}:`, e);
+      }
 
-       rejectedBuses.push({
-          id: doc.id,
-          userId: busData.driverId,
-          userEmail: driverEmail,
-          userDisplayName: driverName,
-          busDetails: {
-              ...busData,
-              status: busData.status,
-          },
-          isLegacy: false,
-       });
+      rejectedBuses.push({
+        id: doc.id,
+        userId: busData.driverId,
+        userEmail: driverEmail,
+        userDisplayName: driverName,
+        busDetails: {
+          ...busData,
+          status: busData.status,
+        },
+        isLegacy: false,
+      });
     }
 
     return rejectedBuses;
@@ -415,26 +450,26 @@ export class BusService implements OnModuleInit {
     const userRef = firestore.collection('users').doc(driverId);
     const userDoc = await userRef.get();
     if (userDoc.exists) {
-        const userData = userDoc.data();
-        if (userData?.busDetails) {
-            buses.push({
-                id: driverId, // Legacy bus ID is user ID
-                ...userData.busDetails,
-                isLegacy: true,
-            });
-        }
+      const userData = userDoc.data();
+      if (userData?.busDetails) {
+        buses.push({
+          id: driverId, // Legacy bus ID is user ID
+          ...userData.busDetails,
+          isLegacy: true,
+        });
+      }
     }
 
     // 2. Fetch New Buses
     const busesRef = firestore.collection('buses');
     const snapshot = await busesRef.where('driverId', '==', driverId).get();
-    
-    snapshot.forEach(doc => {
-        buses.push({
-            id: doc.id,
-            ...doc.data(),
-            isLegacy: false,
-        });
+
+    snapshot.forEach((doc) => {
+      buses.push({
+        id: doc.id,
+        ...doc.data(),
+        isLegacy: false,
+      });
     });
 
     return buses;
@@ -453,7 +488,7 @@ export class BusService implements OnModuleInit {
     const buses = [];
     for (const doc of snapshot.docs) {
       const busData = doc.data();
-      
+
       // Optionally fetch driver details if needed
       // For now returning the bus data directly
       buses.push({
@@ -489,7 +524,10 @@ export class BusService implements OnModuleInit {
     const firestore = this.firebaseService.getFirestore();
 
     // Validate operating days before proceeding
-    const busDoc = await firestore.collection('users').doc(bookingData.busId).get();
+    const busDoc = await firestore
+      .collection('users')
+      .doc(bookingData.busId)
+      .get();
     if (!busDoc.exists) {
       throw new NotFoundException('Bus not found');
     }
@@ -498,14 +536,16 @@ export class BusService implements OnModuleInit {
     if (busData?.busDetails?.operatingDays) {
       // Convert travel date to day of week
       const travelDate = new Date(bookingData.travelDate);
-      const dayOfWeek = travelDate.toLocaleDateString('en-US', {
-        weekday: 'long',
-      }).toUpperCase();
+      const dayOfWeek = travelDate
+        .toLocaleDateString('en-US', {
+          weekday: 'long',
+        })
+        .toUpperCase();
 
       // Check if bus operates on this day
       if (!busData.busDetails.operatingDays.includes(dayOfWeek)) {
         throw new BadRequestException(
-          `This bus does not operate on ${dayOfWeek}s. Operating days: ${busData.busDetails.operatingDays.join(', ')}`
+          `This bus does not operate on ${dayOfWeek}s. Operating days: ${busData.busDetails.operatingDays.join(', ')}`,
         );
       }
     }
@@ -828,16 +868,20 @@ export class BusService implements OnModuleInit {
           const searchFrom = searchCriteria.from.toLowerCase().trim();
           // For "from" searches, match if the bus route starts from the searched location
           // OR if it's a round trip and goes to the searched location
-          fromMatch = routeFrom.toLowerCase().includes(searchFrom) ||
-                     (routeTo.toLowerCase().includes(searchFrom) && route.includes('return'));
+          fromMatch =
+            routeFrom.toLowerCase().includes(searchFrom) ||
+            (routeTo.toLowerCase().includes(searchFrom) &&
+              route.includes('return'));
         }
 
         if (searchCriteria.to) {
           const searchTo = searchCriteria.to.toLowerCase().trim();
           // For "to" searches, match if the bus route goes to the searched location
           // OR if it's a round trip and starts from the searched location
-          toMatch = routeTo.toLowerCase().includes(searchTo) ||
-                   (routeFrom.toLowerCase().includes(searchTo) && route.includes('return'));
+          toMatch =
+            routeTo.toLowerCase().includes(searchTo) ||
+            (routeFrom.toLowerCase().includes(searchTo) &&
+              route.includes('return'));
         }
 
         // If both from and to are specified, require exact route match
@@ -986,7 +1030,7 @@ export class BusService implements OnModuleInit {
       .collection('buses')
       .doc(requestData.busId)
       .get();
-      
+
     if (!busDoc.exists) {
       throw new NotFoundException('Bus not found');
     }
@@ -1038,12 +1082,16 @@ export class BusService implements OnModuleInit {
         ...doc.data(),
       });
     });
-    
+
     // Ensure sorted (needed if fallback used)
     requests.sort((a, b) => {
-        const dateA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : new Date(a.createdAt).getTime();
-        const dateB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : new Date(b.createdAt).getTime();
-        return dateB - dateA;
+      const dateA = a.createdAt?.toDate
+        ? a.createdAt.toDate().getTime()
+        : new Date(a.createdAt).getTime();
+      const dateB = b.createdAt?.toDate
+        ? b.createdAt.toDate().getTime()
+        : new Date(b.createdAt).getTime();
+      return dateB - dateA;
     });
 
     return requests;
@@ -1305,7 +1353,10 @@ export class BusService implements OnModuleInit {
       updatedAt: new Date(),
     };
 
-    console.log('📝 Creating Routine Payload:', JSON.stringify(newRoutine, null, 2));
+    console.log(
+      '📝 Creating Routine Payload:',
+      JSON.stringify(newRoutine, null, 2),
+    );
 
     const docRef = await routinesRef.add(newRoutine);
 
@@ -1489,37 +1540,46 @@ export class BusService implements OnModuleInit {
         // For simplicity/safety with larger sets, let's fetch individual user docs concurrently or use batches.
         // Given potentially many buses, fetching individually with Promise.all is reasonable for now if not massive scale.
         const busPromises = Array.from(busIds).map(async (busId) => {
-            const userDoc = await firestore.collection('users').doc(busId).get();
-            if (userDoc.exists) {
-                const userData = userDoc.data();
-                return { 
-                    busId, 
-                    busName: userData.busDetails?.busName || 'Unknown Bus',
-                    busNumber: userData.busDetails?.busNumber || 'N/A',
-                    driverName: userData.displayName || 'Unknown Driver'
-                };
-            }
-            return null;
+          const userDoc = await firestore.collection('users').doc(busId).get();
+          if (userDoc.exists) {
+            const userData = userDoc.data();
+            return {
+              busId,
+              busName: userData.busDetails?.busName || 'Unknown Bus',
+              busNumber: userData.busDetails?.busNumber || 'N/A',
+              driverName: userData.displayName || 'Unknown Driver',
+            };
+          }
+          return null;
         });
 
         const buses = await Promise.all(busPromises);
-        buses.forEach(bus => {
-            if (bus) {
-                busDetailsMap.set(bus.busId, bus);
-            }
+        buses.forEach((bus) => {
+          if (bus) {
+            busDetailsMap.set(bus.busId, bus);
+          }
         });
       }
 
       // Attach bus details to routines
-      const enrichedRoutines = routines.map(routine => ({
-          ...routine,
-          busDetails: busDetailsMap.get(routine.busId) || { busName: 'Unknown', busNumber: 'N/A', driverName: 'Unknown' }
+      const enrichedRoutines = routines.map((routine) => ({
+        ...routine,
+        busDetails: busDetailsMap.get(routine.busId) || {
+          busName: 'Unknown',
+          busNumber: 'N/A',
+          driverName: 'Unknown',
+        },
       }));
 
-      console.log(`✅ [getApprovedRoutines] Found ${enrichedRoutines.length} routines.`);
+      console.log(
+        `✅ [getApprovedRoutines] Found ${enrichedRoutines.length} routines.`,
+      );
       return enrichedRoutines;
     } catch (error) {
-      console.warn('🔥 [getApprovedRoutines] Primary query failed (index?), running fallback:', error.message);
+      console.warn(
+        '🔥 [getApprovedRoutines] Primary query failed (index?), running fallback:',
+        error.message,
+      );
       const snapshot = await routinesRef
         .where('status', '==', 'approved')
         .get();
@@ -1535,7 +1595,6 @@ export class BusService implements OnModuleInit {
     }
   }
 
-
   async updateRoutine(routineId: string, updateData: any) {
     const firestore = this.firebaseService.getFirestore();
     const routineRef = firestore.collection('routines').doc(routineId);
@@ -1545,20 +1604,27 @@ export class BusService implements OnModuleInit {
       throw new NotFoundException('Routine not found');
     }
 
-      const routineData = routineDoc.data();
-      const finalUpdateData = {
-        ...updateData,
-        updatedAt: new Date(),
-      };
+    const routineData = routineDoc.data();
+    const finalUpdateData = {
+      ...updateData,
+      updatedAt: new Date(),
+    };
 
-      if (routineData.status === 'approved' || routineData.status === 'rejected') {
-        finalUpdateData.status = 'pending_approval';
-        if (routineData.status === 'approved') {
-          finalUpdateData.isUpdateRequested = true;
-        }
+    if (
+      routineData.status === 'approved' ||
+      routineData.status === 'rejected'
+    ) {
+      finalUpdateData.status = 'pending_approval';
+      if (routineData.status === 'approved') {
+        finalUpdateData.isUpdateRequested = true;
       }
+    }
 
-      await routineRef.update(finalUpdateData);
+    await routineRef.update(finalUpdateData);
+    return { message: 'Routine updated successfully' };
+  }
+
+  async updateRoutineStatus(
     routineId: string,
     status: string,
     rejectionReason?: string,
@@ -1574,7 +1640,10 @@ export class BusService implements OnModuleInit {
     const updateData: any = {
       status,
       updatedAt: new Date(),
-        isUpdateRequested: false,
+    };
+
+    if (status === 'approved') {
+      updateData.isUpdateRequested = false;
       updateData.approvedAt = new Date();
     } else if (status === 'rejected' && rejectionReason) {
       updateData.rejectionReason = rejectionReason;
@@ -1629,7 +1698,12 @@ export class BusService implements OnModuleInit {
     routinesSnapshot.forEach((doc) => {
       const data = doc.data();
       // Filter routines that are scheduled for this day (case-insensitive)
-      if (data.daysOfWeek && data.daysOfWeek.some((d: string) => d.toLowerCase() === dayOfWeek.toLowerCase())) {
+      if (
+        data.daysOfWeek &&
+        data.daysOfWeek.some(
+          (d: string) => d.toLowerCase() === dayOfWeek.toLowerCase(),
+        )
+      ) {
         routines.push({
           id: doc.id,
           ...data,
@@ -1644,26 +1718,39 @@ export class BusService implements OnModuleInit {
         .doc(`${routine.id}_${date}`);
 
       const dailyDoc = await dailyStatusRef.get();
-      const dailyStatus = dailyDoc.exists ? dailyDoc.data() : { availability: 'available', date };
+      const dailyStatus = dailyDoc.exists
+        ? dailyDoc.data()
+        : { availability: 'available', date };
 
       // Calculate if this routine is currently active (SL time)
       const slNow = moment.tz('Asia/Colombo');
-      const [startH, startM] = routine.timeSlot.startTime.split(':').map(Number);
+      const [startH, startM] = routine.timeSlot.startTime
+        .split(':')
+        .map(Number);
       const [endH, endM] = routine.timeSlot.endTime.split(':').map(Number);
 
-      const startTime = moment.tz('Asia/Colombo').set({ hour: startH, minute: startM, second: 0, millisecond: 0 });
-      let endTime = moment.tz('Asia/Colombo').set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
-      
+      const startTime = moment
+        .tz('Asia/Colombo')
+        .set({ hour: startH, minute: startM, second: 0, millisecond: 0 });
+      let endTime = moment
+        .tz('Asia/Colombo')
+        .set({ hour: endH, minute: endM, second: 0, millisecond: 0 });
+
       if (endTime.isBefore(startTime)) {
         endTime.add(1, 'day'); // Handle overnight routines
       }
 
       // Buffer: consider it active 15 mins before and 15 mins after
-      const isActive = dailyStatus.availability === 'started' || 
-                      (dailyStatus.availability === 'available' && 
-                       slNow.isBetween(startTime.clone().subtract(15, 'minutes'), endTime.clone().add(15, 'minutes')));
+      const isActive =
+        dailyStatus.availability === 'started' ||
+        (dailyStatus.availability === 'available' &&
+          slNow.isBetween(
+            startTime.clone().subtract(15, 'minutes'),
+            endTime.clone().add(15, 'minutes'),
+          ));
 
-      const isUpcoming = dailyStatus.availability === 'available' && slNow.isBefore(startTime);
+      const isUpcoming =
+        dailyStatus.availability === 'available' && slNow.isBefore(startTime);
 
       return {
         ...routine,
@@ -1723,7 +1810,11 @@ export class BusService implements OnModuleInit {
 
   // ==================== PASSENGER SEARCH WITH SCHEDULES ====================
 
-  async searchBusesWithSchedules(route: string, date: string, departureTime?: string) {
+  async searchBusesWithSchedules(
+    route: string,
+    date: string,
+    departureTime?: string,
+  ) {
     const firestore = this.firebaseService.getFirestore();
     const dayOfWeek = new Date(date).toLocaleDateString('en-US', {
       weekday: 'long',
@@ -1753,12 +1844,28 @@ export class BusService implements OnModuleInit {
 
       if (routeMatches && dayMatches) {
         // --- Departure Time Filter (Sri Lankan Time) ---
-        if (departureTime && routineData.timeSlot?.startTime && routineData.timeSlot?.endTime) {
+        if (
+          departureTime &&
+          routineData.timeSlot?.startTime &&
+          routineData.timeSlot?.endTime
+        ) {
           try {
             const baseDate = '2026-04-04'; // Use a dummy date for time comparison
-            const depMoment = moment.tz(`${baseDate} ${departureTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
-            const startMoment = moment.tz(`${baseDate} ${routineData.timeSlot.startTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
-            let endMoment = moment.tz(`${baseDate} ${routineData.timeSlot.endTime}`, 'YYYY-MM-DD HH:mm', 'Asia/Colombo');
+            const depMoment = moment.tz(
+              `${baseDate} ${departureTime}`,
+              'YYYY-MM-DD HH:mm',
+              'Asia/Colombo',
+            );
+            const startMoment = moment.tz(
+              `${baseDate} ${routineData.timeSlot.startTime}`,
+              'YYYY-MM-DD HH:mm',
+              'Asia/Colombo',
+            );
+            let endMoment = moment.tz(
+              `${baseDate} ${routineData.timeSlot.endTime}`,
+              'YYYY-MM-DD HH:mm',
+              'Asia/Colombo',
+            );
 
             if (endMoment.isBefore(startMoment)) {
               endMoment.add(1, 'day');
@@ -1769,7 +1876,9 @@ export class BusService implements OnModuleInit {
             }
 
             if (!depMoment.isBetween(startMoment, endMoment, null, '[]')) {
-              console.log(`[Search] Routine ${doc.id} skipped: ${departureTime} is outside ${routineData.timeSlot.startTime}-${routineData.timeSlot.endTime}`);
+              console.log(
+                `[Search] Routine ${doc.id} skipped: ${departureTime} is outside ${routineData.timeSlot.startTime}-${routineData.timeSlot.endTime}`,
+              );
               continue;
             }
           } catch (err) {
@@ -2396,52 +2505,54 @@ export class BusService implements OnModuleInit {
 
       // Process new buses
       for (const busDoc of busesSnapshot.docs) {
-          const busData = busDoc.data();
-          if (!busData.currentLocation) continue;
-          
-          const lastUpdate = busData.lastLocationUpdate?.toDate?.().getTime() || 0;
-          
-          if (now - lastUpdate < threshold) {
-              liveBuses.push({
-                  id: busDoc.id,
-                  busNumber: busData.busNumber || 'Unknown',
-                  busName: busData.busName || 'Unknown Bus',
-                  route: busData.route || 'Unknown Route',
-                  currentLocation: busData.currentLocation,
-                  coordinates: busData.currentLocation, // Backwards compatibility if needed
-                  status: 'active',
-                  passengers: 0, // TODO: fetch real count
-                  estimatedArrival: 'TBD',
-                  nextStop: 'Unknown',
-                  heading: busData.currentLocation.heading || 0,
-                  speed: busData.currentLocation.speed || 0,
-                  type: 'standard'
-              });
-          }
+        const busData = busDoc.data();
+        if (!busData.currentLocation) continue;
+
+        const lastUpdate =
+          busData.lastLocationUpdate?.toDate?.().getTime() || 0;
+
+        if (now - lastUpdate < threshold) {
+          liveBuses.push({
+            id: busDoc.id,
+            busNumber: busData.busNumber || 'Unknown',
+            busName: busData.busName || 'Unknown Bus',
+            route: busData.route || 'Unknown Route',
+            currentLocation: busData.currentLocation,
+            coordinates: busData.currentLocation, // Backwards compatibility if needed
+            status: 'active',
+            passengers: 0, // TODO: fetch real count
+            estimatedArrival: 'TBD',
+            nextStop: 'Unknown',
+            heading: busData.currentLocation.heading || 0,
+            speed: busData.currentLocation.speed || 0,
+            type: 'standard',
+          });
+        }
       }
 
       // Process legacy buses
       for (const userDoc of usersSnapshot.docs) {
         const userData = userDoc.data();
         if (userData.busDetails && userData.busDetails.currentLocation) {
-            const lastUpdate = userData.busDetails.lastLocationUpdate?.toDate?.().getTime() || 0;
-            if (now - lastUpdate < threshold) {
-                liveBuses.push({
-                    id: userDoc.id,
-                    busNumber: userData.busDetails.busNumber || 'Unknown',
-                    busName: userData.busDetails.busName || 'Unknown Bus',
-                    route: userData.busDetails.route || 'Unknown Route',
-                    currentLocation: userData.busDetails.currentLocation,
-                    coordinates: userData.busDetails.currentLocation,
-                    status: 'active',
-                    passengers: 0, 
-                    estimatedArrival: 'TBD',
-                    nextStop: 'Unknown',
-                    heading: userData.busDetails.currentLocation.heading || 0,
-                    speed: userData.busDetails.currentLocation.speed || 0,
-                    type: 'legacy'
-                });
-            }
+          const lastUpdate =
+            userData.busDetails.lastLocationUpdate?.toDate?.().getTime() || 0;
+          if (now - lastUpdate < threshold) {
+            liveBuses.push({
+              id: userDoc.id,
+              busNumber: userData.busDetails.busNumber || 'Unknown',
+              busName: userData.busDetails.busName || 'Unknown Bus',
+              route: userData.busDetails.route || 'Unknown Route',
+              currentLocation: userData.busDetails.currentLocation,
+              coordinates: userData.busDetails.currentLocation,
+              status: 'active',
+              passengers: 0,
+              estimatedArrival: 'TBD',
+              nextStop: 'Unknown',
+              heading: userData.busDetails.currentLocation.heading || 0,
+              speed: userData.busDetails.currentLocation.speed || 0,
+              type: 'legacy',
+            });
+          }
         }
       }
 
@@ -2467,21 +2578,27 @@ export class BusService implements OnModuleInit {
       tripData.from,
       `Between ${tripData.from} and ${tripData.to}`,
       `Approaching ${tripData.to}`,
-      tripData.to
+      tripData.to,
     ];
 
     const currentStopIndex = Math.floor(progress * (routeStops.length - 1));
-    const currentLocation = routeStops[Math.min(currentStopIndex, routeStops.length - 1)];
-    const nextStop = currentStopIndex < routeStops.length - 1 ? routeStops[currentStopIndex + 1] : null;
+    const currentLocation =
+      routeStops[Math.min(currentStopIndex, routeStops.length - 1)];
+    const nextStop =
+      currentStopIndex < routeStops.length - 1
+        ? routeStops[currentStopIndex + 1]
+        : null;
 
     // Calculate delay (random for demo)
     const delay = Math.random() > 0.8 ? Math.floor(Math.random() * 15) + 1 : 0;
 
     // Estimated arrival
-    const estimatedArrivalTime = new Date(arrivalTime.getTime() + (delay * 60 * 1000));
+    const estimatedArrivalTime = new Date(
+      arrivalTime.getTime() + delay * 60 * 1000,
+    );
     const estimatedArrival = estimatedArrivalTime.toLocaleTimeString('en-US', {
       hour: '2-digit',
-      minute: '2-digit'
+      minute: '2-digit',
     });
 
     // Determine status
@@ -2492,7 +2609,7 @@ export class BusService implements OnModuleInit {
     // Mock coordinates (would come from GPS in real implementation)
     const coordinates = {
       lat: 6.9271 + (Math.random() - 0.5) * 0.1, // Colombo area
-      lng: 79.8612 + (Math.random() - 0.5) * 0.1
+      lng: 79.8612 + (Math.random() - 0.5) * 0.1,
     };
 
     return {
@@ -2501,7 +2618,7 @@ export class BusService implements OnModuleInit {
       estimatedArrival,
       delay,
       status,
-      coordinates
+      coordinates,
     };
   }
 
@@ -2511,12 +2628,16 @@ export class BusService implements OnModuleInit {
     // ---- In-memory cache check ----
     const cached = this.trackableBusesCache.get(passengerId);
     if (cached && Date.now() < cached.expiresAt) {
-      console.log(`[Tracker] Cache HIT for passenger ${passengerId}. Returning cached result.`);
+      console.log(
+        `[Tracker] Cache HIT for passenger ${passengerId}. Returning cached result.`,
+      );
       return cached.result;
     }
 
     try {
-      console.log(`[Tracker] Cache MISS — Fetching live data for passenger: ${passengerId}`);
+      console.log(
+        `[Tracker] Cache MISS — Fetching live data for passenger: ${passengerId}`,
+      );
 
       // Step 1: Get only CONFIRMED bookings for this passenger
       const bookingsSnapshot = await firestore
@@ -2525,7 +2646,9 @@ export class BusService implements OnModuleInit {
         .where('status', '==', 'confirmed')
         .get();
 
-      console.log(`[Tracker] Found ${bookingsSnapshot.docs.length} confirmed bookings.`);
+      console.log(
+        `[Tracker] Found ${bookingsSnapshot.docs.length} confirmed bookings.`,
+      );
 
       // Compute current time in Sri Lanka / IST timezone (UTC+5:30)
       // The backend server runs in UTC; routine times are stored in local Sri Lanka time
@@ -2538,14 +2661,22 @@ export class BusService implements OnModuleInit {
       const day = String(nowSL.getUTCDate()).padStart(2, '0');
       const todayStr = `${year}-${month}-${day}`;
       // Use SL time for day-of-week (so the query matches routine's daysOfWeek correctly)
-      const todayDayOfWeek = nowSL.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Asia/Colombo' });
+      const todayDayOfWeek = nowSL.toLocaleDateString('en-US', {
+        weekday: 'long',
+        timeZone: 'Asia/Colombo',
+      });
       const slHours = nowSL.getUTCHours();
       const slMinutes = nowSL.getUTCMinutes();
 
-      console.log(`[Tracker] Today: ${todayStr} (${todayDayOfWeek}), SL time: ${slHours}:${String(slMinutes).padStart(2,'0')}`);
+      console.log(
+        `[Tracker] Today: ${todayStr} (${todayDayOfWeek}), SL time: ${slHours}:${String(slMinutes).padStart(2, '0')}`,
+      );
 
       // Helper: check if current SL local time is within a routine time window "HH:MM"
-      const isWithinTimeWindow = (startTime: string, endTime: string): boolean => {
+      const isWithinTimeWindow = (
+        startTime: string,
+        endTime: string,
+      ): boolean => {
         const [sh, sm] = startTime.split(':').map(Number);
         const [eh, em] = endTime.split(':').map(Number);
         const currentMinutes = slHours * 60 + slMinutes;
@@ -2579,8 +2710,11 @@ export class BusService implements OnModuleInit {
           const routineData = routineDoc.data();
 
           // Check if this routine is scheduled for today
-          const isToday = routineData.daysOfWeek &&
-            routineData.daysOfWeek.some((d: string) => d.toLowerCase() === todayDayOfWeek.toLowerCase());
+          const isToday =
+            routineData.daysOfWeek &&
+            routineData.daysOfWeek.some(
+              (d: string) => d.toLowerCase() === todayDayOfWeek.toLowerCase(),
+            );
 
           if (!isToday) continue;
 
@@ -2597,7 +2731,8 @@ export class BusService implements OnModuleInit {
           const availability = dailyStatus?.availability || 'available';
 
           // Skip if driver explicitly marked unavailable or completed
-          if (availability === 'unavailable' || availability === 'completed') continue;
+          if (availability === 'unavailable' || availability === 'completed')
+            continue;
 
           // ✅ DUAL CHECK:
           // 1. Driver explicitly started the routine via TodaySchedule UI
@@ -2609,7 +2744,9 @@ export class BusService implements OnModuleInit {
             ? isWithinTimeWindow(timeWindow.startTime, timeWindow.endTime)
             : false;
 
-          console.log(`[Tracker] Routine ${routineDoc.id} | availability: ${availability} | withinWindow: ${isWithinWindow} | window: ${timeWindow?.startTime}-${timeWindow?.endTime}`);
+          console.log(
+            `[Tracker] Routine ${routineDoc.id} | availability: ${availability} | withinWindow: ${isWithinWindow} | window: ${timeWindow?.startTime}-${timeWindow?.endTime}`,
+          );
 
           if (isExplicitlyStarted || isWithinWindow) {
             startedRoutine = { id: routineDoc.id, ...routineData };
@@ -2621,7 +2758,10 @@ export class BusService implements OnModuleInit {
 
         // Step 4: Get the driver's bus details and LIVE location
         // In this system, busId === driverId (legacy), so location is at users/{driverId}.busDetails.currentLocation
-        const driverDoc = await firestore.collection('users').doc(driverId).get();
+        const driverDoc = await firestore
+          .collection('users')
+          .doc(driverId)
+          .get();
         if (!driverDoc.exists) {
           console.log(`[Tracker] Driver user doc not found for ${driverId}`);
           continue;
@@ -2629,7 +2769,10 @@ export class BusService implements OnModuleInit {
 
         const driverData = driverDoc.data();
         let busDetails = driverData.busDetails;
-        let currentLocation = BusService.GLOBAL_BUS_LOCATION_CACHE.get(driverId) ?? busDetails?.currentLocation ?? null;
+        let currentLocation =
+          BusService.GLOBAL_BUS_LOCATION_CACHE.get(driverId) ??
+          busDetails?.currentLocation ??
+          null;
         let busId = driverId; // legacy: busId = driverId
 
         // Also check if there's a new-style bus in 'buses' collection for this driver
@@ -2645,14 +2788,16 @@ export class BusService implements OnModuleInit {
           const newBusDoc = newBusSnapshot.docs[0];
           const newBusData = newBusDoc.data();
           busId = newBusDoc.id;
-          
+
           // Check global cache using new busId as well
-          const cachedLocation = BusService.GLOBAL_BUS_LOCATION_CACHE.get(busId);
+          const cachedLocation =
+            BusService.GLOBAL_BUS_LOCATION_CACHE.get(busId);
           if (cachedLocation) currentLocation = cachedLocation;
 
           // Use new bus details, preferring new-style currentLocation if it exists
           if (!busDetails) busDetails = newBusData;
-          if (!cachedLocation && newBusData.currentLocation) currentLocation = newBusData.currentLocation;
+          if (!cachedLocation && newBusData.currentLocation)
+            currentLocation = newBusData.currentLocation;
         }
 
         if (!busDetails) {
@@ -2660,7 +2805,9 @@ export class BusService implements OnModuleInit {
           continue;
         }
 
-        console.log(`[Tracker] ✅ Bus ${busDetails.busNumber} | driverId: ${driverId} | currentLocation: ${JSON.stringify(currentLocation)}`);
+        console.log(
+          `[Tracker] ✅ Bus ${busDetails.busNumber} | driverId: ${driverId} | currentLocation: ${JSON.stringify(currentLocation)}`,
+        );
 
         const trackableBus = {
           id: busId,
@@ -2668,14 +2815,19 @@ export class BusService implements OnModuleInit {
           busNumber: busDetails.busNumber || 'N/A',
           route: startedRoutine.route || busDetails.route || 'Unknown Route',
           currentLocation: currentLocation,
-          coordinates: (currentLocation && typeof currentLocation === 'object' && 'lat' in currentLocation)
-            ? { lat: currentLocation.lat, lng: currentLocation.lng }
-            : undefined,
+          coordinates:
+            currentLocation &&
+            typeof currentLocation === 'object' &&
+            'lat' in currentLocation
+              ? { lat: currentLocation.lat, lng: currentLocation.lng }
+              : undefined,
           status: 'on-route' as const,
-          driverName: driverData.displayName || driverData.name || 'Unknown Driver',
+          driverName:
+            driverData.displayName || driverData.name || 'Unknown Driver',
           driverPhone: driverData.phoneNumber || driverData.phone || '',
           bookingId: bookingDoc.id,
-          travelDate: bookingData.travelDate?.toDate?.() || bookingData.travelDate,
+          travelDate:
+            bookingData.travelDate?.toDate?.() || bookingData.travelDate,
           routineTimeSlot: startedRoutine.timeSlot || null,
           routineId: startedRoutine.id,
         };
@@ -2683,7 +2835,9 @@ export class BusService implements OnModuleInit {
         trackableBusesMap.set(driverId, trackableBus);
       }
 
-      console.log(`[Tracker] Returning ${trackableBusesMap.size} active trackable buses.`);
+      console.log(
+        `[Tracker] Returning ${trackableBusesMap.size} active trackable buses.`,
+      );
       const result = Array.from(trackableBusesMap.values());
 
       // Store in cache for 30 seconds
@@ -2693,13 +2847,11 @@ export class BusService implements OnModuleInit {
       });
 
       return result;
-
     } catch (error) {
       console.error('[Tracker] Error getting trackable buses:', error);
       throw new BadRequestException('Failed to get trackable buses');
     }
   }
-
 
   // ==================== LIVE LOCATION TRACKING ====================
 
@@ -2710,36 +2862,43 @@ export class BusService implements OnModuleInit {
     const firestore = this.firebaseService.getFirestore();
     // Update high-performance global cache instantly
     BusService.GLOBAL_BUS_LOCATION_CACHE.set(busId, {
-        ...location,
-        updatedAt: Date.now()
+      ...location,
+      updatedAt: Date.now(),
     });
 
     const busRef = firestore.collection('buses').doc(busId);
     const busDoc = await busRef.get();
 
     if (busDoc.exists) {
-        console.log(`[LocationUpdate] Found new-style bus doc for busId: ${busId}. Updating 'buses' collection.`);
-        await busRef.update({
-            currentLocation: location,
-            lastLocationUpdate: admin.firestore.FieldValue.serverTimestamp(),
-        });
+      console.log(
+        `[LocationUpdate] Found new-style bus doc for busId: ${busId}. Updating 'buses' collection.`,
+      );
+      await busRef.update({
+        currentLocation: location,
+        lastLocationUpdate: admin.firestore.FieldValue.serverTimestamp(),
+      });
     } else {
-        console.log(`[LocationUpdate] No new-style bus found for busId: ${busId}. Checking 'users' collection.`);
-        const userRef = firestore.collection('users').doc(busId);
-        const userDoc = await userRef.get();
-        
-        if (userDoc.exists) {
-             console.log(`[LocationUpdate] Found driver/user doc for busId: ${busId}. Updating 'users' collection -> busDetails.currentLocation.`);
-             await userRef.update({
-                'busDetails.currentLocation': location,
-                'busDetails.lastLocationUpdate': admin.firestore.FieldValue.serverTimestamp(),
-            });
-        } else {
-             console.log(`[LocationUpdate] ERROR: Could not find any document (bus or user) to update location for busId: ${busId}`);
-        }
+      console.log(
+        `[LocationUpdate] No new-style bus found for busId: ${busId}. Checking 'users' collection.`,
+      );
+      const userRef = firestore.collection('users').doc(busId);
+      const userDoc = await userRef.get();
+
+      if (userDoc.exists) {
+        console.log(
+          `[LocationUpdate] Found driver/user doc for busId: ${busId}. Updating 'users' collection -> busDetails.currentLocation.`,
+        );
+        await userRef.update({
+          'busDetails.currentLocation': location,
+          'busDetails.lastLocationUpdate':
+            admin.firestore.FieldValue.serverTimestamp(),
+        });
+      } else {
+        console.log(
+          `[LocationUpdate] ERROR: Could not find any document (bus or user) to update location for busId: ${busId}`,
+        );
+      }
     }
     return { success: true };
   }
-
 }
-
