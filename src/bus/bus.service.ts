@@ -684,14 +684,25 @@ export class BusService implements OnModuleInit {
               bookedSeats: tripData.bookedSeats + seatsToBook,
             });
 
-            console.log('✅ Trip seats updated');
-          } else {
+            console.log('✅ Trip seats updated');          } else {
             // Handle regular bus booking
             console.log('🚌 Handling regular bus booking...');
-            // Prepare all the writes
-            const seatUpdate = {};
+
+            // TRANSACTIONAL SEAT CHECK: Prevent double-booking
+            const currentSeatDoc = await transaction.get(seatAvailabilityRef);
+            if (currentSeatDoc.exists) {
+              const currentSeatData = currentSeatDoc.data();
+              for (const seat of bookingData.seats) {
+                if (currentSeatData?.seats && currentSeatData.seats[seat.seatId]?.status === 'booked') {
+                  throw new BadRequestException(`Seat ${seat.seatNumber} is already booked.`);
+                }
+              }
+            }
+
+            // Prepare all the writes as a nested object, not dotted strings
+            const seatUpdates = {};
             bookingData.seats.forEach((seat) => {
-              seatUpdate[`seats.${seat.seatId}`] = {
+              seatUpdates[seat.seatId] = {
                 seatNumber: seat.seatNumber,
                 status: 'booked',
                 bookedBy: bookingData.userId,
@@ -709,7 +720,7 @@ export class BusService implements OnModuleInit {
                 travelDate: bookingData.travelDate,
                 route: bookingData.route,
                 lastUpdated: new Date(),
-                ...seatUpdate,
+                seats: seatUpdates,
               },
               { merge: true },
             );
@@ -760,22 +771,35 @@ export class BusService implements OnModuleInit {
       booking,
     };
   }
+    async getSeatAvailability(busId: string, travelDate: string) {
+      const firestore = this.firebaseService.getFirestore();
+      const seatAvailabilityRef = firestore
+        .collection('seatAvailability')
+        .doc(`${busId}_${travelDate}`);
 
-  async getSeatAvailability(busId: string, travelDate: string) {
-    const firestore = this.firebaseService.getFirestore();
-    const seatAvailabilityRef = firestore
-      .collection('seatAvailability')
-      .doc(`${busId}_${travelDate}`);
+      const seatDoc = await seatAvailabilityRef.get();
+      const defaultLayout = this.generateDefaultSeats(busId, travelDate);
 
-    const seatDoc = await seatAvailabilityRef.get();
+      if (!seatDoc.exists) {
+        // Return default seat layout if no bookings exist yet
+        return defaultLayout;
+      }
 
-    if (!seatDoc.exists) {
-      // Return default seat layout if no bookings exist yet
-      return this.generateDefaultSeats(busId, travelDate);
+      const bookedData = seatDoc.data();
+      
+      // Merge the booked seats over the available default seats
+      // to ensure the frontend receives all 54 seats.
+      if (bookedData && bookedData.seats) {
+        for (const [seatId, seatInfo] of Object.entries(bookedData.seats)) {
+          // @ts-ignore
+          defaultLayout.seats[seatId] = seatInfo;
+        }
+      }
+
+      // Return the complete merged layout
+      bookedData.seats = defaultLayout.seats;
+      return bookedData;
     }
-
-    return seatDoc.data();
-  }
 
   private generateDefaultSeats(busId: string, travelDate: string) {
     // Get bus details to know total seats
