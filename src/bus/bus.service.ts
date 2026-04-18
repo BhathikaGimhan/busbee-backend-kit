@@ -778,7 +778,7 @@ export class BusService implements OnModuleInit {
         .doc(`${busId}_${travelDate}`);
 
       const seatDoc = await seatAvailabilityRef.get();
-      const defaultLayout = this.generateDefaultSeats(busId, travelDate);
+      const defaultLayout = await this.generateDefaultSeats(busId, travelDate);
 
       if (!seatDoc.exists) {
         // Return default seat layout if no bookings exist yet
@@ -801,37 +801,51 @@ export class BusService implements OnModuleInit {
       return bookedData;
     }
 
-  private generateDefaultSeats(busId: string, travelDate: string) {
-    // Get bus details to know total seats
-    // For now, return a default layout - in real app, this would come from bus configuration
-    const defaultSeats = {};
-    const totalSeats = 54; // This should come from bus data
-    const seatsPerRow = 4;
-    const rows = Math.ceil(totalSeats / seatsPerRow);
-
-    for (let row = 1; row <= rows; row++) {
-      for (let seat = 1; seat <= seatsPerRow; seat++) {
-        const seatNumber = `${row}${String.fromCharCode(64 + seat)}`;
-        const seatId = `seat-${row}-${seat}`;
-
-        let seatType: 'regular' | 'premium' | 'wheelchair' = 'regular';
-        let price = 850; // Base price
-
-        if (row === 1) {
-          seatType = 'premium';
-          price = Math.round(850 * 1.2); // 20% more for front row
-        } else if (seat === 1 && row % 3 === 0) {
-          // Every 3rd row, first seat is wheelchair
-          seatType = 'wheelchair';
-          price = 850; // Same price for wheelchair
+private async generateDefaultSeats(busId: string, travelDate: string) {
+      // Get bus details to know total seats
+      const firestore = this.firebaseService.getFirestore();
+      const busDoc = await firestore.collection('users').doc(busId).get();
+      
+      let totalSeats = 54; // default fallback
+      if (busDoc.exists) {
+        const busData = busDoc.data();
+        if (busData?.busDetails?.numberOfSeats) {
+          totalSeats = Number(busData.busDetails.numberOfSeats);
         }
+      }
 
-        defaultSeats[seatId] = {
-          seatNumber,
-          status: 'available',
-          price,
-          type: seatType,
-        };
+      const defaultSeats = {};
+      const seatsPerRow = 4;
+      const rows = Math.ceil(totalSeats / seatsPerRow);
+      let generatedCount = 0;
+
+      for (let row = 1; row <= rows; row++) {
+        for (let seat = 1; seat <= seatsPerRow; seat++) {
+          if (generatedCount >= totalSeats) break;
+
+          const seatNumber = `${row}${String.fromCharCode(64 + seat)}`;
+          const seatId = `seat-${row}-${seat}`;
+
+          let seatType: 'regular' | 'premium' | 'wheelchair' = 'regular';
+          let price = 850; // Base price
+
+          if (row === 1) {
+            seatType = 'premium';
+            price = Math.round(850 * 1.2); // 20% more for front row
+          } else if (seat === 1 && row % 3 === 0) {
+            // Every 3rd row, first seat is wheelchair
+            seatType = 'wheelchair';
+            price = 850; // Same price for wheelchair
+          }
+
+          defaultSeats[seatId] = {
+            seatNumber,
+            status: 'available',
+            price,
+            type: seatType,
+          };
+
+          generatedCount++;
       }
     }
 
