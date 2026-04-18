@@ -539,6 +539,7 @@ export class BusService implements OnModuleInit {
       const dayOfWeek = travelDate
         .toLocaleDateString('en-US', {
           weekday: 'long',
+          timeZone: 'UTC',
         })
         .toUpperCase();
 
@@ -1723,6 +1724,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
     // Get day of week from date
     const dayOfWeek = new Date(date).toLocaleDateString('en-US', {
       weekday: 'long',
+      timeZone: 'UTC',
     });
 
     // Get all approved routines for this driver
@@ -1778,14 +1780,8 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
         endTime.add(1, 'day'); // Handle overnight routines
       }
 
-      // Buffer: consider it active 15 mins before and 15 mins after
-      const isActive =
-        dailyStatus.availability === 'started' ||
-        (dailyStatus.availability === 'available' &&
-          slNow.isBetween(
-            startTime.clone().subtract(15, 'minutes'),
-            endTime.clone().add(15, 'minutes'),
-          ));
+      // Buffer: consider it active ONLY when explicitly started
+      const isActive = dailyStatus.availability === 'started';
 
       const isUpcoming =
         dailyStatus.availability === 'available' && slNow.isBefore(startTime);
@@ -1856,6 +1852,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
     const firestore = this.firebaseService.getFirestore();
     const dayOfWeek = new Date(date).toLocaleDateString('en-US', {
       weekday: 'long',
+      timeZone: 'UTC',
     });
 
     // Search for approved routines matching the route and day
@@ -2699,7 +2696,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       const day = String(nowSL.getUTCDate()).padStart(2, '0');
       const todayStr = `${year}-${month}-${day}`;
       // Use SL time for day-of-week (so the query matches routine's daysOfWeek correctly)
-      const todayDayOfWeek = nowSL.toLocaleDateString('en-US', {
+      const todayDayOfWeek = now.toLocaleDateString('en-US', {
         weekday: 'long',
         timeZone: 'Asia/Colombo',
       });
@@ -2729,6 +2726,16 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
 
       for (const bookingDoc of bookingsSnapshot.docs) {
         const bookingData = bookingDoc.data();
+        
+        // Filter out past bookings
+        let bDateStr = bookingData.travelDate;
+        if (bDateStr?.toDate) {
+          bDateStr = bDateStr.toDate().toISOString().split('T')[0];
+        }
+        if (bDateStr && typeof bDateStr === 'string' && bDateStr < todayStr) {
+          continue;
+        }
+
         // bookingData.busId is actually the DRIVER's userId (legacy system)
         const driverId = bookingData.busId;
 
@@ -2776,17 +2783,11 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
           // 1. Driver explicitly started the routine via TodaySchedule UI
           const isExplicitlyStarted = availability === 'started';
 
-          // 2. OR: current time falls within the scheduled time window (bus is active by schedule)
-          const timeWindow = routineData.timeSlot;
-          const isWithinWindow = timeWindow
-            ? isWithinTimeWindow(timeWindow.startTime, timeWindow.endTime)
-            : false;
-
           console.log(
-            `[Tracker] Routine ${routineDoc.id} | availability: ${availability} | withinWindow: ${isWithinWindow} | window: ${timeWindow?.startTime}-${timeWindow?.endTime}`,
+            `[Tracker] Routine ${routineDoc.id} | availability: ${availability} | explicitlyStarted: ${isExplicitlyStarted}`,
           );
 
-          if (isExplicitlyStarted || isWithinWindow) {
+          if (isExplicitlyStarted) {
             startedRoutine = { id: routineDoc.id, ...routineData };
             break;
           }
@@ -2812,6 +2813,16 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
           busDetails?.currentLocation ??
           null;
         let busId = driverId; // legacy: busId = driverId
+
+        // Check if startedRoutine has a specific busId
+        const activeBusId = startedRoutine?.busId;
+        if (activeBusId && activeBusId !== driverId) {
+          const routineBusCache = BusService.GLOBAL_BUS_LOCATION_CACHE.get(activeBusId);
+          if (routineBusCache) {
+             currentLocation = routineBusCache;
+             busId = activeBusId;
+          }
+        }
 
         // Also check if there's a new-style bus in 'buses' collection for this driver
         // (which stores location separately)
@@ -2896,6 +2907,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
   async updateBusLocation(
     busId: string,
     location: { lat: number; lng: number; heading?: number; speed?: number },
+    driverId?: string,
   ) {
     const firestore = this.firebaseService.getFirestore();
     // Update high-performance global cache instantly
@@ -2903,6 +2915,21 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       ...location,
       updatedAt: Date.now(),
     });
+
+    if (driverId && driverId !== busId) {
+      BusService.GLOBAL_BUS_LOCATION_CACHE.set(driverId, {
+        ...location,
+        updatedAt: Date.now(),
+      });
+      const driverRef = firestore.collection('users').doc(driverId);
+      const driverDoc = await driverRef.get();
+      if (driverDoc.exists) {
+        await driverRef.update({
+          'busDetails.currentLocation': location,
+          'busDetails.lastLocationUpdate': admin.firestore.FieldValue.serverTimestamp(),
+        }).catch(err => console.error('[LocationUpdate] non-fatal: could not update users collection', err));
+      }
+    }
 
     const busRef = firestore.collection('buses').doc(busId);
     const busDoc = await busRef.get();

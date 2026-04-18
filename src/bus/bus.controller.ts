@@ -102,8 +102,10 @@ export class BusController {
   async updateBusLocation(
     @Param('busId') busId: string,
     @Body() location: { lat: number; lng: number; heading?: number; speed?: number },
+    @Req() req: any,
   ) {
-    return this.busService.updateBusLocation(busId, location);
+    const driverId = req.user?.uid || req.user?.userId;
+    return this.busService.updateBusLocation(busId, location, driverId);
   }
 
   @Post(':userId/approve')
