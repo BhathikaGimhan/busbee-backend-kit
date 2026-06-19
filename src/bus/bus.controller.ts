@@ -313,6 +313,12 @@ export class BusController {
     return await this.busService.updateBookingStatus(bookingId, body.status);
   }
 
+  @Get('bookings/all')
+  @UseGuards(JwtAuthGuard)
+  async getAllBookings() {
+    return await this.busService.getAllBookings();
+  }
+
 
   // ==================== ROUTINE MANAGEMENT ENDPOINTS ====================
 
@@ -357,12 +363,13 @@ export class BusController {
   @UseGuards(JwtAuthGuard)
   async updateRoutineStatus(
     @Param('routineId') routineId: string,
-    @Body() body: { status: string; rejectionReason?: string },
+    @Body() body: { status: string; rejectionReason?: string; bookingCommission?: number },
   ) {
     return await this.busService.updateRoutineStatus(
       routineId,
       body.status,
       body.rejectionReason,
+      body.bookingCommission,
     );
   }
 
