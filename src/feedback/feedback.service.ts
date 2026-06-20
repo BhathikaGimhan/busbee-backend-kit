@@ -69,6 +69,7 @@ export class FeedbackService {
   async getDriverFeedback(driverId: string) {
     const firestore = this.firebaseService.getFirestore();
 
+    let feedback = [];
     try {
       // Create a composite index for this query: driverId Ascending, createdAt Descending
       const feedbackSnapshot = await firestore
@@ -77,20 +78,37 @@ export class FeedbackService {
         .orderBy('createdAt', 'desc')
         .get();
 
-      const feedback = [];
-      const userIds = new Set<string>();
+      feedbackSnapshot.forEach((doc) => {
+        feedback.push({ id: doc.id, ...doc.data() });
+      });
+    } catch (error) {
+      console.warn('Index might be missing for getDriverFeedback, falling back:', error);
+       const feedbackSnapshot = await firestore
+        .collection('feedback')
+        .where('driverId', '==', driverId)
+        .get();
 
       feedbackSnapshot.forEach((doc) => {
-        const data = doc.data();
-        feedback.push({ id: doc.id, ...data });
-        if (data.userId) {
-          userIds.add(data.userId);
+        feedback.push({ id: doc.id, ...doc.data() });
+      });
+      // Sort in memory
+      feedback.sort((a, b) => {
+         const aTime = a.createdAt?.seconds || a.createdAt?.getTime?.() || new Date(a.createdAt).getTime();
+         const bTime = b.createdAt?.seconds || b.createdAt?.getTime?.() || new Date(b.createdAt).getTime();
+         return bTime - aTime;
+      });
+    }
+
+    try {
+      const userIds = new Set<string>();
+      feedback.forEach((item) => {
+        if (item.userId) {
+          userIds.add(item.userId);
         }
       });
       
-      // Fetch user details for each feedback
-       const userDetailsMap = new Map();
-       if (userIds.size > 0) {
+      const userDetailsMap = new Map();
+      if (userIds.size > 0) {
         const userPromises = Array.from(userIds).map(async (uid) => {
             const userDoc = await firestore.collection('users').doc(uid).get();
             if (userDoc.exists) {
@@ -112,42 +130,19 @@ export class FeedbackService {
         });
       }
 
-      // Attach user details to feedback
       const enrichedFeedback = feedback.map(item => {
           const user = userDetailsMap.get(item.userId);
           return {
               ...item,
-              userName: user?.displayName || 'Anonymous User',
+              userName: user?.displayName || 'Anonymous Passenger',
               userPhoto: user?.photoURL || null
           };
       });
 
-
-
-      // Sort in memory
-      return enrichedFeedback.sort((a, b) => {
-         const aTime = a.createdAt?.seconds || a.createdAt?.getTime?.() || new Date(a.createdAt).getTime();
-         const bTime = b.createdAt?.seconds || b.createdAt?.getTime?.() || new Date(b.createdAt).getTime();
-         return bTime - aTime;
-      });
-    } catch (error) {
-      console.warn('Index might be missing for getDriverFeedback, falling back:', error);
-      // Fallback: client-side filtering if index fails (though for prod we should add index)
-       const feedbackSnapshot = await firestore
-        .collection('feedback')
-        .where('driverId', '==', driverId)
-        .get();
-
-      const feedback = [];
-      feedbackSnapshot.forEach((doc) => {
-        feedback.push({ id: doc.id, ...doc.data() });
-      });
-      // Sort in memory
-      return feedback.sort((a, b) => {
-         const aTime = a.createdAt?.seconds || a.createdAt;
-         const bTime = b.createdAt?.seconds || b.createdAt;
-         return bTime - aTime;
-      });
+      return enrichedFeedback;
+    } catch (enrichError) {
+      console.error('Error enriching driver feedback with user details:', enrichError);
+      return feedback;
     }
   }
 

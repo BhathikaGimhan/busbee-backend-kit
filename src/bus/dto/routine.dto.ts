@@ -50,9 +50,10 @@ export class RoutineDto {
   @Min(0)
   pricePerPerson: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  bookingCommission: number; // Percentage (0-100)
+  bookingCommission?: number; // Percentage (0-100) — Set by admin on approval
 
   @IsArray()
   @IsString({ each: true })
@@ -106,6 +107,11 @@ export class UpdateRoutineStatusDto {
   @IsOptional()
   @IsString()
   rejectionReason?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  bookingCommission?: number; // Admin sets this on approval
 }
 
 export class UpdateDailyRoutineStatusDto {

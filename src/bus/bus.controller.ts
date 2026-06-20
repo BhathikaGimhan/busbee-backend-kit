@@ -313,6 +313,27 @@ export class BusController {
     return await this.busService.updateBookingStatus(bookingId, body.status);
   }
 
+  @Get('bookings/all')
+  @UseGuards(JwtAuthGuard)
+  async getAllBookings() {
+    return await this.busService.getAllBookings();
+  }
+
+
+  @Post('bookings/:bookingId/cancel')
+  @UseGuards(JwtAuthGuard)
+  async cancelBooking(
+    @Param('bookingId') bookingId: string,
+    @Body() body: { userId: string },
+  ) {
+    return await this.busService.cancelBooking(bookingId, body.userId);
+  }
+
+  @Post('bookings/:bookingId/refund')
+  @UseGuards(JwtAuthGuard)
+  async processRefund(@Param('bookingId') bookingId: string) {
+    return await this.busService.processRefund(bookingId);
+  }
 
   // ==================== ROUTINE MANAGEMENT ENDPOINTS ====================
 
@@ -357,12 +378,13 @@ export class BusController {
   @UseGuards(JwtAuthGuard)
   async updateRoutineStatus(
     @Param('routineId') routineId: string,
-    @Body() body: { status: string; rejectionReason?: string },
+    @Body() body: { status: string; rejectionReason?: string; bookingCommission?: number },
   ) {
     return await this.busService.updateRoutineStatus(
       routineId,
       body.status,
       body.rejectionReason,
+      body.bookingCommission,
     );
   }
 

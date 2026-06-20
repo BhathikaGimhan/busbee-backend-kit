@@ -19,6 +19,18 @@ export class BusService implements OnModuleInit {
     { result: any[]; expiresAt: number }
   >();
 
+  // Cache fields to prevent Firestore query timeouts under high concurrency
+  private approvedBusesCache: any = null;
+  private approvedBusesCacheTime = 0;
+
+  private approvedRoutinesCache: any = null;
+  private approvedRoutinesCacheTime = 0;
+
+  private locationSuggestionsCache: any = null;
+  private locationSuggestionsCacheTime = 0;
+
+  private readonly CACHE_TTL_MS = 15000; // 15 seconds cache duration
+
   // Global high-performance location cache (shared across all passengers)
   // Key: busId or driverId, Value: { lat, lng, updatedAt }
   private static GLOBAL_BUS_LOCATION_CACHE = new Map<string, any>();
@@ -59,10 +71,11 @@ export class BusService implements OnModuleInit {
       console.error(e);
     }
 
-    // 3. Total Bookings & Revenue
+    // 3. Total Bookings & Revenue & Commission
     const bookingsRef = firestore.collection('bookings');
     let totalBookings = 0;
     let revenue = 0;
+    let totalCommission = 0;
     const monthlyDataMap = new Map();
 
     // Initialize last 6 months
@@ -100,6 +113,7 @@ export class BusService implements OnModuleInit {
         totalBookings++;
         const price = data.totalPrice || 0;
         revenue += price;
+        totalCommission += data.commissionAmount || 0;
 
         let bookedAtDate = new Date();
         if (data.bookedAt) {
@@ -124,6 +138,7 @@ export class BusService implements OnModuleInit {
         activeTrips,
         totalBookings,
         revenue,
+        totalCommission,
       },
       chartData: Array.from(monthlyDataMap.values()),
     };
@@ -296,15 +311,39 @@ export class BusService implements OnModuleInit {
   }
 
   async getApprovedBuses() {
+    const now = Date.now();
+    if (
+      this.approvedBusesCache &&
+      now - this.approvedBusesCacheTime < this.CACHE_TTL_MS
+    ) {
+      console.log('⚡ [getApprovedBuses] Returning cached data');
+      return this.approvedBusesCache;
+    }
+
     const firestore = this.firebaseService.getFirestore();
     const approvedBuses = [];
 
     // 1. Legacy Buses
     const usersRef = firestore.collection('users');
-    const usersSnapshot = await usersRef
-      .where('userType', '==', 'driver')
-      .where('busDetails.status', '==', BusStatus.APPROVED)
-      .get();
+    let usersSnapshot;
+    try {
+      usersSnapshot = await usersRef
+        .where('userType', '==', 'driver')
+        .where('busDetails.status', '==', BusStatus.APPROVED)
+        .get();
+    } catch (err) {
+      console.warn("⚠️ [getApprovedBuses] Compound query failed, running fallback in-memory filtering:", err.message);
+      const driversSnapshot = await usersRef
+        .where('userType', '==', 'driver')
+        .get();
+      const filteredDocs = driversSnapshot.docs.filter((doc) => {
+        const data = doc.data();
+        return data.busDetails?.status === BusStatus.APPROVED;
+      });
+      usersSnapshot = {
+        forEach: (callback) => filteredDocs.forEach(callback)
+      };
+    }
 
     usersSnapshot.forEach((doc) => {
       const userData = doc.data();
@@ -322,38 +361,73 @@ export class BusService implements OnModuleInit {
 
     // 2. New Buses
     const busesRef = firestore.collection('buses');
-    const busesSnapshot = await busesRef
-      .where('status', '==', BusStatus.APPROVED)
-      .get();
-
-    for (const doc of busesSnapshot.docs) {
-      const busData = doc.data();
-      let driverName = 'Unknown';
-      let driverEmail = '';
-      try {
-        const driverDoc = await usersRef.doc(busData.driverId).get();
-        if (driverDoc.exists) {
-          const driverData = driverDoc.data();
-          driverName = driverData.displayName;
-          driverEmail = driverData.email;
-        }
-      } catch (e) {
-        console.error(`Error fetching driver for bus ${doc.id}:`, e);
-      }
-
-      approvedBuses.push({
-        id: doc.id,
-        userId: busData.driverId,
-        userEmail: driverEmail,
-        userDisplayName: driverName,
-        busDetails: {
-          ...busData,
-          status: busData.status,
-        },
-        isLegacy: false,
+    let busesSnapshot;
+    try {
+      busesSnapshot = await busesRef
+        .where('status', '==', BusStatus.APPROVED)
+        .get();
+    } catch (err) {
+      console.warn("⚠️ [getApprovedBuses] New buses query failed, running fallback in-memory filtering:", err.message);
+      const allBusesSnapshot = await busesRef.get();
+      const filteredDocs = allBusesSnapshot.docs.filter((doc) => {
+        return doc.data().status === BusStatus.APPROVED;
       });
+      busesSnapshot = {
+        docs: filteredDocs
+      };
     }
 
+    if (busesSnapshot.docs && busesSnapshot.docs.length > 0) {
+      const driverIds = Array.from(
+        new Set(
+          busesSnapshot.docs.map((doc) => doc.data().driverId).filter(Boolean),
+        ),
+      );
+      if (driverIds.length > 0) {
+        const driverRefs = driverIds.map((id: any) => usersRef.doc(id));
+        const driverDocs = await firestore.getAll(...driverRefs);
+
+        const driverMap = new Map();
+        driverDocs.forEach((driverDoc) => {
+          if (driverDoc.exists) {
+            driverMap.set(driverDoc.id, driverDoc.data());
+          }
+        });
+
+        busesSnapshot.docs.forEach((doc) => {
+          const busData = doc.data();
+          const driverData = driverMap.get(busData.driverId) || {};
+          approvedBuses.push({
+            id: doc.id,
+            userId: busData.driverId,
+            userEmail: driverData.email || '',
+            userDisplayName: driverData.displayName || 'Unknown',
+            busDetails: {
+              ...busData,
+              status: busData.status,
+            },
+            isLegacy: false,
+          });
+        });
+      } else {
+        busesSnapshot.docs.forEach((doc) => {
+          approvedBuses.push({
+            id: doc.id,
+            userId: doc.data().driverId,
+            userEmail: '',
+            userDisplayName: 'Unknown',
+            busDetails: {
+              ...doc.data(),
+              status: doc.data().status,
+            },
+            isLegacy: false,
+          });
+        });
+      }
+    }
+
+    this.approvedBusesCache = approvedBuses;
+    this.approvedBusesCacheTime = Date.now();
     return approvedBuses;
   }
 
@@ -515,6 +589,8 @@ export class BusService implements OnModuleInit {
     tripId?: string;
     isTripBooking?: boolean;
     isPrivateHire?: boolean;
+    commissionPercent?: number;
+    commissionAmount?: number;
   }) {
     console.log(
       '📝 Starting seat booking process for user:',
@@ -588,6 +664,8 @@ export class BusService implements OnModuleInit {
       status: 'confirmed',
       bookedAt: new Date(),
       paymentStatus: 'pending',
+      commissionPercent: bookingData.commissionPercent || 0,
+      commissionAmount: bookingData.commissionAmount || 0,
       ...(bookingData.isTripBooking &&
         bookingData.tripId && {
           tripId: bookingData.tripId,
@@ -1379,6 +1457,141 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
     };
   }
 
+  async cancelBooking(bookingId: string, userId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const bookingRef = firestore.collection('bookings').doc(bookingId);
+
+    return await firestore.runTransaction(async (transaction) => {
+      const bookingDoc = await transaction.get(bookingRef);
+      if (!bookingDoc.exists) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      const booking = bookingDoc.data();
+
+      // Security check
+      if (booking.userId !== userId) {
+        throw new BadRequestException('Unauthorized to cancel this booking');
+      }
+
+      if (booking.status === 'cancelled') {
+        throw new BadRequestException('Booking is already cancelled');
+      }
+
+      // Check 12-hour rule
+      // Assuming departure is 06:00 AM on travelDate if no precise time exists
+      let travelDateTime = new Date(booking.travelDate);
+      travelDateTime.setHours(6, 0, 0, 0);
+
+      const now = new Date();
+      const timeDiff = travelDateTime.getTime() - now.getTime();
+      const hoursDiff = timeDiff / (1000 * 60 * 60);
+
+      if (hoursDiff < 12 && timeDiff > 0) {
+        throw new BadRequestException('Cannot cancel bookings less than 12 hours before departure.');
+      } else if (timeDiff <= 0 && booking.status !== 'cancelled') {
+        throw new BadRequestException('Cannot cancel a trip that has already departed.');
+      }
+
+      // Release seats
+      if (booking.isTripBooking && booking.tripId) {
+        const tripRef = firestore.collection('trips').doc(booking.tripId);
+        const tripDoc = await transaction.get(tripRef);
+        if (tripDoc.exists) {
+          const tripData = tripDoc.data();
+          const seatsToRelease = booking.seats?.length || 0;
+          transaction.update(tripRef, {
+            bookedSeats: Math.max(0, tripData.bookedSeats - seatsToRelease),
+          });
+        }
+      } else {
+        // Regular bus booking or private hire
+        const seatAvailabilityRef = firestore
+          .collection('seatAvailability')
+          .doc(`${booking.busId}_${booking.travelDate}`);
+        const seatDoc = await transaction.get(seatAvailabilityRef);
+
+        if (seatDoc.exists) {
+          const seatData = seatDoc.data();
+          let seatUpdates = { ...(seatData.seats || {}) };
+          let madeChanges = false;
+          
+          if (booking.isPrivateHire) {
+            // Un-book the whole bus by clearing seats
+            seatUpdates = {};
+            madeChanges = true;
+            transaction.update(seatAvailabilityRef, {
+              isPrivateHire: false,
+              hiredBy: null,
+            });
+          } else {
+            // Regular un-booking of specific seats
+            for (const seat of booking.seats || []) {
+              if (seatUpdates[seat.seatId]) {
+                delete seatUpdates[seat.seatId];
+                madeChanges = true;
+              }
+            }
+          }
+
+          if (madeChanges) {
+             transaction.update(seatAvailabilityRef, {
+                seats: seatUpdates,
+                lastUpdated: new Date()
+             });
+          }
+        }
+      }
+
+      // Update booking status
+      transaction.update(bookingRef, {
+        status: 'cancelled',
+        refundStatus: 'pending',
+        cancelledAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      console.log(`✅ Booking ${bookingId} cancelled by user ${userId}`);
+
+      return {
+        success: true,
+        message: 'Booking cancelled successfully. Refund is pending.',
+      };
+    });
+  }
+
+  async processRefund(bookingId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const bookingRef = firestore.collection('bookings').doc(bookingId);
+
+    const bookingDoc = await bookingRef.get();
+    if (!bookingDoc.exists) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const booking = bookingDoc.data();
+    if (booking.status !== 'cancelled') {
+      throw new BadRequestException('Only cancelled bookings can be refunded');
+    }
+
+    if (booking.refundStatus === 'processed') {
+      throw new BadRequestException('Refund already processed');
+    }
+
+    await bookingRef.update({
+      refundStatus: 'processed',
+      refundedAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    console.log(`✅ Refund processed for booking ${bookingId}`);
+
+    return {
+      success: true,
+      message: 'Refund processed successfully',
+    };
+  }
+
   // ==================== ROUTINE MANAGEMENT ====================
 
   async createRoutine(createRoutineDto: any) {
@@ -1551,56 +1764,87 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
   }
 
   async getApprovedRoutines() {
+    const now = Date.now();
+    if (
+      this.approvedRoutinesCache &&
+      now - this.approvedRoutinesCacheTime < this.CACHE_TTL_MS
+    ) {
+      console.log('⚡ [getApprovedRoutines] Returning cached data');
+      return this.approvedRoutinesCache;
+    }
+
     const firestore = this.firebaseService.getFirestore();
     const routinesRef = firestore.collection('routines');
 
+    let routines: any[] = [];
     try {
       const snapshot = await routinesRef
         .where('status', '==', 'approved')
         .orderBy('createdAt', 'desc')
         .get();
 
-      const routines: any[] = [];
-      const busIds = new Set<string>();
-
       snapshot.forEach((doc) => {
         const data = doc.data();
-        busIds.add(data.busId);
         routines.push({
           id: doc.id,
           ...data,
         });
       });
+    } catch (error) {
+      console.warn(
+        '🔥 [getApprovedRoutines] Primary query failed (index?), running fallback:',
+        error.message,
+      );
+      try {
+        const snapshot = await routinesRef
+          .where('status', '==', 'approved')
+          .get();
 
-      // Fetch details for all relevant buses
+        snapshot.forEach((doc) => {
+          routines.push({
+            id: doc.id,
+            ...doc.data(),
+          });
+        });
+
+        // In-memory sorting fallback (descending by createdAt)
+        routines.sort((a, b) => {
+          const timeA = a.createdAt?.seconds || (a.createdAt ? new Date(a.createdAt).getTime() / 1000 : 0);
+          const timeB = b.createdAt?.seconds || (b.createdAt ? new Date(b.createdAt).getTime() / 1000 : 0);
+          return timeB - timeA;
+        });
+      } catch (fallbackError) {
+        console.error('🔥 [getApprovedRoutines] Fallback query failed:', fallbackError);
+        return [];
+      }
+    }
+
+    // Common details enrichment & caching path
+    try {
+      const busIds = new Set<string>();
+      routines.forEach((r) => {
+        if (r.busId) busIds.add(r.busId);
+      });
+
       const busDetailsMap = new Map();
       if (busIds.size > 0) {
-        // Firestore 'in' query supports up to 10 items. For robustness, we'll fetch individually or ideally allow up to 10 batches.
-        // For simplicity/safety with larger sets, let's fetch individual user docs concurrently or use batches.
-        // Given potentially many buses, fetching individually with Promise.all is reasonable for now if not massive scale.
-        const busPromises = Array.from(busIds).map(async (busId) => {
-          const userDoc = await firestore.collection('users').doc(busId).get();
+        const refs = Array.from(busIds).map((busId) =>
+          firestore.collection('users').doc(busId),
+        );
+        const docs = await firestore.getAll(...refs);
+        docs.forEach((userDoc) => {
           if (userDoc.exists) {
             const userData = userDoc.data();
-            return {
-              busId,
+            busDetailsMap.set(userDoc.id, {
+              busId: userDoc.id,
               busName: userData.busDetails?.busName || 'Unknown Bus',
               busNumber: userData.busDetails?.busNumber || 'N/A',
               driverName: userData.displayName || 'Unknown Driver',
-            };
-          }
-          return null;
-        });
-
-        const buses = await Promise.all(busPromises);
-        buses.forEach((bus) => {
-          if (bus) {
-            busDetailsMap.set(bus.busId, bus);
+            });
           }
         });
       }
 
-      // Attach bus details to routines
       const enrichedRoutines = routines.map((routine) => ({
         ...routine,
         busDetails: busDetailsMap.get(routine.busId) || {
@@ -1611,25 +1855,15 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       }));
 
       console.log(
-        `✅ [getApprovedRoutines] Found ${enrichedRoutines.length} routines.`,
+        `✅ [getApprovedRoutines] Found & enriched ${enrichedRoutines.length} routines.`,
       );
+      this.approvedRoutinesCache = enrichedRoutines;
+      this.approvedRoutinesCacheTime = Date.now();
       return enrichedRoutines;
-    } catch (error) {
-      console.warn(
-        '🔥 [getApprovedRoutines] Primary query failed (index?), running fallback:',
-        error.message,
-      );
-      const snapshot = await routinesRef
-        .where('status', '==', 'approved')
-        .get();
-
-      const routines: any[] = [];
-      snapshot.forEach((doc) => {
-        routines.push({
-          id: doc.id,
-          ...doc.data(),
-        });
-      });
+    } catch (enrichError) {
+      console.error('🔥 [getApprovedRoutines] Enrichment failed:', enrichError);
+      this.approvedRoutinesCache = routines;
+      this.approvedRoutinesCacheTime = Date.now();
       return routines;
     }
   }
@@ -1667,6 +1901,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
     routineId: string,
     status: string,
     rejectionReason?: string,
+    bookingCommission?: number,
   ) {
     const firestore = this.firebaseService.getFirestore();
     const routineRef = firestore.collection('routines').doc(routineId);
@@ -1684,6 +1919,10 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
     if (status === 'approved') {
       updateData.isUpdateRequested = false;
       updateData.approvedAt = new Date();
+      // Admin sets the booking commission on approval
+      if (bookingCommission !== undefined && bookingCommission !== null) {
+        updateData.bookingCommission = bookingCommission;
+      }
     } else if (status === 'rejected' && rejectionReason) {
       updateData.rejectionReason = rejectionReason;
       updateData.rejectedAt = new Date();
@@ -1691,7 +1930,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
 
     await routineRef.update(updateData);
 
-    console.log(`✅ Routine ${routineId} status updated to: ${status}`);
+    console.log(`✅ Routine ${routineId} status updated to: ${status}${bookingCommission !== undefined ? ` with ${bookingCommission}% commission` : ''}`);
 
     return {
       message: `Routine ${status} successfully`,
@@ -2011,6 +2250,15 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
   // ==================== LOCATION SUGGESTIONS ====================
 
   async getLocationSuggestions() {
+    const now = Date.now();
+    if (
+      this.locationSuggestionsCache &&
+      now - this.locationSuggestionsCacheTime < this.CACHE_TTL_MS
+    ) {
+      console.log('⚡ [getLocationSuggestions] Returning cached data');
+      return this.locationSuggestionsCache;
+    }
+
     const firestore = this.firebaseService.getFirestore();
     const usersRef = firestore.collection('users');
 
@@ -2332,7 +2580,10 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       }
     });
 
-    return Array.from(locations).sort();
+    const result = Array.from(locations).sort();
+    this.locationSuggestionsCache = result;
+    this.locationSuggestionsCacheTime = Date.now();
+    return result;
   }
 
   // ==================== ROUTES MANAGEMENT METHODS ====================
@@ -2965,5 +3216,77 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       }
     }
     return { success: true };
+  }
+
+  // ==================== ADMIN BOOKING REPORTS ====================
+
+  async getAllBookings() {
+    const firestore = this.firebaseService.getFirestore();
+    const bookingsRef = firestore.collection('bookings');
+    const snapshot = await bookingsRef.orderBy('bookedAt', 'desc').get();
+
+    const bookings = [];
+
+    // Gather all unique user IDs (passengers and bus drivers)
+    const userIds = new Set<string>();
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      if (data.userId) userIds.add(data.userId);
+      if (data.busId) userIds.add(data.busId);
+    });
+
+    // Batch fetch all unique users in a single call
+    const usersMap = new Map<string, any>();
+    if (userIds.size > 0) {
+      const refs = Array.from(userIds).map((id) =>
+        firestore.collection('users').doc(id),
+      );
+      try {
+        const docs = await firestore.getAll(...refs);
+        docs.forEach((doc) => {
+          if (doc.exists) {
+            usersMap.set(doc.id, doc.data());
+          }
+        });
+      } catch (error) {
+        console.error('🔥 [getAllBookings] Error batch fetching users:', error);
+      }
+    }
+
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+
+      // Resolve passenger name from usersMap
+      const passengerUser = usersMap.get(data.userId);
+      const passengerName =
+        passengerUser?.displayName || passengerUser?.email || 'Unknown';
+
+      // Resolve bus name from usersMap
+      const busUser = usersMap.get(data.busId);
+      const busName = busUser?.busDetails?.busName || 'Unknown';
+      const busNumber = busUser?.busDetails?.busNumber || '';
+
+      bookings.push({
+        id: data.id || doc.id,
+        userId: data.userId,
+        passengerName,
+        passengerId: data.userId,
+        busName,
+        busNumber,
+        busId: data.busId,
+        route: data.route || '',
+        travelDate: data.travelDate || '',
+        totalPrice: data.totalPrice || 0,
+        commissionPercent: data.commissionPercent || 0,
+        commissionAmount: data.commissionAmount || 0,
+        status: data.status || 'unknown',
+        refundStatus: data.refundStatus,
+        cancelledAt: data.cancelledAt?.toDate?.() || data.cancelledAt,
+        seatCount: data.seats?.length || 0,
+        bookedAt: data.bookedAt?.toDate?.() || data.bookedAt,
+      });
+    });
+
+    return bookings;
   }
 }
