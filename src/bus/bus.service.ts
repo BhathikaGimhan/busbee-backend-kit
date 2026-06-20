@@ -1457,6 +1457,141 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
     };
   }
 
+  async cancelBooking(bookingId: string, userId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const bookingRef = firestore.collection('bookings').doc(bookingId);
+
+    return await firestore.runTransaction(async (transaction) => {
+      const bookingDoc = await transaction.get(bookingRef);
+      if (!bookingDoc.exists) {
+        throw new NotFoundException('Booking not found');
+      }
+
+      const booking = bookingDoc.data();
+
+      // Security check
+      if (booking.userId !== userId) {
+        throw new BadRequestException('Unauthorized to cancel this booking');
+      }
+
+      if (booking.status === 'cancelled') {
+        throw new BadRequestException('Booking is already cancelled');
+      }
+
+      // Check 12-hour rule
+      // Assuming departure is 06:00 AM on travelDate if no precise time exists
+      let travelDateTime = new Date(booking.travelDate);
+      travelDateTime.setHours(6, 0, 0, 0);
+
+      const now = new Date();
+      const timeDiff = travelDateTime.getTime() - now.getTime();
+      const hoursDiff = timeDiff / (1000 * 60 * 60);
+
+      if (hoursDiff < 12 && timeDiff > 0) {
+        throw new BadRequestException('Cannot cancel bookings less than 12 hours before departure.');
+      } else if (timeDiff <= 0 && booking.status !== 'cancelled') {
+        throw new BadRequestException('Cannot cancel a trip that has already departed.');
+      }
+
+      // Release seats
+      if (booking.isTripBooking && booking.tripId) {
+        const tripRef = firestore.collection('trips').doc(booking.tripId);
+        const tripDoc = await transaction.get(tripRef);
+        if (tripDoc.exists) {
+          const tripData = tripDoc.data();
+          const seatsToRelease = booking.seats?.length || 0;
+          transaction.update(tripRef, {
+            bookedSeats: Math.max(0, tripData.bookedSeats - seatsToRelease),
+          });
+        }
+      } else {
+        // Regular bus booking or private hire
+        const seatAvailabilityRef = firestore
+          .collection('seatAvailability')
+          .doc(`${booking.busId}_${booking.travelDate}`);
+        const seatDoc = await transaction.get(seatAvailabilityRef);
+
+        if (seatDoc.exists) {
+          const seatData = seatDoc.data();
+          let seatUpdates = { ...(seatData.seats || {}) };
+          let madeChanges = false;
+          
+          if (booking.isPrivateHire) {
+            // Un-book the whole bus by clearing seats
+            seatUpdates = {};
+            madeChanges = true;
+            transaction.update(seatAvailabilityRef, {
+              isPrivateHire: false,
+              hiredBy: null,
+            });
+          } else {
+            // Regular un-booking of specific seats
+            for (const seat of booking.seats || []) {
+              if (seatUpdates[seat.seatId]) {
+                delete seatUpdates[seat.seatId];
+                madeChanges = true;
+              }
+            }
+          }
+
+          if (madeChanges) {
+             transaction.update(seatAvailabilityRef, {
+                seats: seatUpdates,
+                lastUpdated: new Date()
+             });
+          }
+        }
+      }
+
+      // Update booking status
+      transaction.update(bookingRef, {
+        status: 'cancelled',
+        refundStatus: 'pending',
+        cancelledAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      console.log(`✅ Booking ${bookingId} cancelled by user ${userId}`);
+
+      return {
+        success: true,
+        message: 'Booking cancelled successfully. Refund is pending.',
+      };
+    });
+  }
+
+  async processRefund(bookingId: string) {
+    const firestore = this.firebaseService.getFirestore();
+    const bookingRef = firestore.collection('bookings').doc(bookingId);
+
+    const bookingDoc = await bookingRef.get();
+    if (!bookingDoc.exists) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    const booking = bookingDoc.data();
+    if (booking.status !== 'cancelled') {
+      throw new BadRequestException('Only cancelled bookings can be refunded');
+    }
+
+    if (booking.refundStatus === 'processed') {
+      throw new BadRequestException('Refund already processed');
+    }
+
+    await bookingRef.update({
+      refundStatus: 'processed',
+      refundedAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    console.log(`✅ Refund processed for booking ${bookingId}`);
+
+    return {
+      success: true,
+      message: 'Refund processed successfully',
+    };
+  }
+
   // ==================== ROUTINE MANAGEMENT ====================
 
   async createRoutine(createRoutineDto: any) {
@@ -3133,6 +3268,7 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
 
       bookings.push({
         id: data.id || doc.id,
+        userId: data.userId,
         passengerName,
         passengerId: data.userId,
         busName,
@@ -3144,8 +3280,10 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
         commissionPercent: data.commissionPercent || 0,
         commissionAmount: data.commissionAmount || 0,
         status: data.status || 'unknown',
+        refundStatus: data.refundStatus,
+        cancelledAt: data.cancelledAt?.toDate?.() || data.cancelledAt,
         seatCount: data.seats?.length || 0,
-        bookedAt: data.bookedAt,
+        bookedAt: data.bookedAt?.toDate?.() || data.bookedAt,
       });
     });
 

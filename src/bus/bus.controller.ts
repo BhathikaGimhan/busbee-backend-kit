@@ -320,6 +320,21 @@ export class BusController {
   }
 
 
+  @Post('bookings/:bookingId/cancel')
+  @UseGuards(JwtAuthGuard)
+  async cancelBooking(
+    @Param('bookingId') bookingId: string,
+    @Body() body: { userId: string },
+  ) {
+    return await this.busService.cancelBooking(bookingId, body.userId);
+  }
+
+  @Post('bookings/:bookingId/refund')
+  @UseGuards(JwtAuthGuard)
+  async processRefund(@Param('bookingId') bookingId: string) {
+    return await this.busService.processRefund(bookingId);
+  }
+
   // ==================== ROUTINE MANAGEMENT ENDPOINTS ====================
 
   @Post('routines')
