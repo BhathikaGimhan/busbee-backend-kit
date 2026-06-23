@@ -7,6 +7,7 @@ import { FirebaseModule } from './firebase/firebase.module';
 import { BusModule } from './bus/bus.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { InquiryModule } from './inquiry/inquiry.module';
+import { PaymentModule } from './payment/payment.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -14,6 +15,10 @@ import { join } from 'path';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: [
+        join(process.cwd(), '.env'),
+        join(__dirname, '..', '.env'),
+      ],
     }),
     ServeStaticModule.forRoot({
       rootPath: join(__dirname, '..', 'uploads'),
@@ -24,6 +29,7 @@ import { join } from 'path';
     BusModule,
     FeedbackModule,
     InquiryModule,
+    PaymentModule,
   ],
   controllers: [AppController],
   providers: [AppService],
