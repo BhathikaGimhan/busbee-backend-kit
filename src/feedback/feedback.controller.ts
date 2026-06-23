@@ -36,6 +36,15 @@ export class FeedbackController {
     );
   }
 
+  @Get('eligible-journeys')
+  @UseGuards(JwtAuthGuard)
+  async getEligibleJourneys(@Req() req: Request) {
+    const authenticatedUser = req.user as { userId: string; email: string };
+    return await this.feedbackService.getEligibleJourneys(
+      authenticatedUser.userId,
+    );
+  }
+
   @Get('user/:userId')
   @UseGuards(JwtAuthGuard)
   async getUserFeedback(@Param('userId') userId: string) {
