@@ -7,8 +7,9 @@ import { join } from 'path';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Serve static assets
-  app.useStaticAssets(join(__dirname, '..', 'uploads'), {
+  // Serve static assets - use process.cwd() to always resolve from project root
+  // regardless of whether running via ts-node or compiled dist
+  app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads/',
   });
 

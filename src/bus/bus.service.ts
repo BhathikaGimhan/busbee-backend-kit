@@ -397,6 +397,20 @@ export class BusService implements OnModuleInit {
         busesSnapshot.docs.forEach((doc) => {
           const busData = doc.data();
           const driverData = driverMap.get(busData.driverId) || {};
+          
+          const photos: string[] = [];
+          if (busData.documents) {
+            if (busData.documents.frontViewUrl) photos.push(busData.documents.frontViewUrl);
+            if (busData.documents.sideViewUrl) photos.push(busData.documents.sideViewUrl);
+            if (busData.documents.interiorViewUrl) photos.push(busData.documents.interiorViewUrl);
+          }
+          if (busData.imageUrl) photos.push(busData.imageUrl);
+          if (Array.isArray(busData.photos)) {
+            busData.photos.forEach((p: string) => {
+              if (!photos.includes(p)) photos.push(p);
+            });
+          }
+
           approvedBuses.push({
             id: doc.id,
             userId: busData.driverId,
@@ -405,20 +419,37 @@ export class BusService implements OnModuleInit {
             busDetails: {
               ...busData,
               status: busData.status,
+              photos: photos,
             },
             isLegacy: false,
           });
         });
       } else {
         busesSnapshot.docs.forEach((doc) => {
+          const busData = doc.data();
+          
+          const photos: string[] = [];
+          if (busData.documents) {
+            if (busData.documents.frontViewUrl) photos.push(busData.documents.frontViewUrl);
+            if (busData.documents.sideViewUrl) photos.push(busData.documents.sideViewUrl);
+            if (busData.documents.interiorViewUrl) photos.push(busData.documents.interiorViewUrl);
+          }
+          if (busData.imageUrl) photos.push(busData.imageUrl);
+          if (Array.isArray(busData.photos)) {
+            busData.photos.forEach((p: string) => {
+              if (!photos.includes(p)) photos.push(p);
+            });
+          }
+
           approvedBuses.push({
             id: doc.id,
-            userId: doc.data().driverId,
+            userId: busData.driverId,
             userEmail: '',
             userDisplayName: 'Unknown',
             busDetails: {
-              ...doc.data(),
-              status: doc.data().status,
+              ...busData,
+              status: busData.status,
+              photos: photos,
             },
             isLegacy: false,
           });
@@ -563,11 +594,49 @@ export class BusService implements OnModuleInit {
     for (const doc of snapshot.docs) {
       const busData = doc.data();
 
-      // Optionally fetch driver details if needed
-      // For now returning the bus data directly
+      // Fetch feedbacks for this bus to calculate rating
+      let averageRating = null;
+      try {
+        const feedbackSnapshot = await firestore
+          .collection('feedback')
+          .where('busId', '==', doc.id)
+          .get();
+        
+        let totalRating = 0;
+        let ratingCount = 0;
+        feedbackSnapshot.forEach((fDoc) => {
+          const rating = fDoc.data().rating;
+          if (typeof rating === 'number' && rating > 0) {
+            totalRating += rating;
+            ratingCount++;
+          }
+        });
+        if (ratingCount > 0) {
+          averageRating = Number((totalRating / ratingCount).toFixed(1));
+        }
+      } catch (err) {
+        console.error(`Error fetching rating for bus ${doc.id}:`, err);
+      }
+
+      // Collect photos
+      const photos: string[] = [];
+      if (busData.documents) {
+        if (busData.documents.frontViewUrl) photos.push(busData.documents.frontViewUrl);
+        if (busData.documents.sideViewUrl) photos.push(busData.documents.sideViewUrl);
+        if (busData.documents.interiorViewUrl) photos.push(busData.documents.interiorViewUrl);
+      }
+      if (busData.imageUrl) photos.push(busData.imageUrl);
+      if (Array.isArray(busData.photos)) {
+        busData.photos.forEach((p: string) => {
+          if (!photos.includes(p)) photos.push(p);
+        });
+      }
+
       buses.push({
         id: doc.id,
         ...busData,
+        rating: averageRating,
+        photos: photos,
       });
     }
 
