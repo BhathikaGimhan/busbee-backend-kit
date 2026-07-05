@@ -20,8 +20,9 @@ export class AuthService {
         displayName,
         userType = UserType.PASSENGER,
         busDetails,
+        isPrivateHireOnly = false,
       } = registerDto;
-      console.log('📝 Registering user:', email, 'as', userType);
+      console.log('📝 Registering user:', email, 'as', userType, 'isPrivateHireOnly:', isPrivateHireOnly);
 
       // Create user in Firebase
       console.log('🔧 Creating user in Firebase Auth...');
@@ -37,6 +38,7 @@ export class AuthService {
         email: userRecord.email,
         displayName: displayName || '',
         userType: userType,
+        isPrivateHireOnly: isPrivateHireOnly,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       };
 
@@ -68,6 +70,7 @@ export class AuthService {
           email: userRecord.email,
           displayName: userRecord.displayName,
           userType: userType,
+          isPrivateHireOnly: isPrivateHireOnly,
           ...(userType === UserType.DRIVER &&
             busDetails && {
               busDetails: {
@@ -113,6 +116,7 @@ export class AuthService {
           email: authResult.email,
           displayName: userData?.displayName || authResult.displayName || '',
           userType: userData?.userType || UserType.PASSENGER,
+          isPrivateHireOnly: userData?.isPrivateHireOnly || false,
           ...(userData?.busDetails && { busDetails: userData.busDetails }),
         },
       };
@@ -134,6 +138,7 @@ export class AuthService {
         email: userRecord.email,
         displayName: userRecord.displayName || userData?.displayName,
         userType: userData?.userType || 'passenger',
+        isPrivateHireOnly: userData?.isPrivateHireOnly || false,
         busDetails: userData?.busDetails,
       };
     } catch {

@@ -116,4 +116,8 @@ export class RegisterDto {
 
   @IsOptional()
   busDetails?: BusDetailsDto;
+
+  @IsBoolean()
+  @IsOptional()
+  isPrivateHireOnly?: boolean;
 }
