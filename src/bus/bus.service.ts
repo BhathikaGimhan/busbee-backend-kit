@@ -1290,9 +1290,14 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       | 'price_accepted'
       | 'confirmed'
       | 'rejected'
-      | 'completed',
+      | 'completed'
+      | 'price_bargained'
+      | 'rejected_by_passenger'
+      | 'cancelled_by_driver',
     finalPrice?: number,
     driverNotes?: string,
+    passengerNote?: string,
+    bargainPrice?: number,
   ) {
     const firestore = this.firebaseService.getFirestore();
     const requestRef = firestore.collection('hireRequests').doc(requestId);
@@ -1302,33 +1307,71 @@ private async generateDefaultSeats(busId: string, travelDate: string) {
       throw new NotFoundException('Hire request not found');
     }
 
+    const existingData = requestDoc.data() || {};
+    const existingHistory: any[] = existingData.negotiationHistory || [];
+
     const updateData: any = {
       status,
       updatedAt: new Date(),
     };
 
-    if (driverNotes) {
-      updateData.driverNotes = driverNotes;
-    }
+    // Driver fields
+    if (driverNotes !== undefined) updateData.driverNotes = driverNotes;
+    if (finalPrice !== undefined) updateData.finalPrice = finalPrice;
 
-    if (finalPrice !== undefined) {
-      updateData.finalPrice = finalPrice;
-    }
+    // Passenger fields
+    if (passengerNote !== undefined) updateData.passengerNote = passengerNote;
+    if (bargainPrice !== undefined) updateData.bargainPrice = bargainPrice;
 
+    // Status-specific timestamps
     if (status === 'price_quoted') {
       updateData.respondedAt = new Date();
+      // Clear previous passenger bargain when driver re-quotes
+      updateData.bargainPrice = null;
+      updateData.passengerNote = null;
     } else if (status === 'price_accepted') {
       updateData.acceptedAt = new Date();
+    } else if (status === 'price_bargained') {
+      updateData.bargainedAt = new Date();
     } else if (status === 'completed') {
       updateData.completedAt = new Date();
+    } else if (status === 'cancelled_by_driver' || status === 'rejected_by_passenger') {
+      updateData.cancelledAt = new Date();
     }
+
+    // Build negotiation history entry
+    const historyEntry: any = {
+      round: existingHistory.length + 1,
+      timestamp: new Date(),
+      action: status,
+    };
+
+    if (status === 'price_quoted') {
+      historyEntry.actor = 'driver';
+      historyEntry.price = finalPrice !== undefined ? finalPrice : null;
+      historyEntry.note = driverNotes !== undefined ? driverNotes : null;
+    } else if (status === 'price_bargained') {
+      historyEntry.actor = 'passenger';
+      historyEntry.price = bargainPrice !== undefined ? bargainPrice : null;
+      historyEntry.note = passengerNote !== undefined ? passengerNote : null;
+    } else if (status === 'price_accepted' || status === 'rejected_by_passenger') {
+      historyEntry.actor = 'passenger';
+      historyEntry.note = passengerNote !== undefined ? passengerNote : null;
+    } else if (status === 'cancelled_by_driver') {
+      historyEntry.actor = 'driver';
+      historyEntry.note = driverNotes !== undefined ? driverNotes : null;
+    } else if (status === 'confirmed' || status === 'completed') {
+      historyEntry.actor = 'driver';
+    }
+
+    updateData.negotiationHistory = [...existingHistory, historyEntry];
 
     await requestRef.update(updateData);
 
     console.log(`✅ Hire request ${requestId} status updated to: ${status}`);
 
     return {
-      message: `Hire request ${status.replace('_', ' ')} successfully`,
+      message: `Hire request ${status.replace(/_/g, ' ')} successfully`,
     };
   }
 

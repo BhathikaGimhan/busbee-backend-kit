@@ -272,9 +272,14 @@ export class BusController {
         | 'price_accepted'
         | 'confirmed'
         | 'rejected'
-        | 'completed';
+        | 'completed'
+        | 'price_bargained'
+        | 'rejected_by_passenger'
+        | 'cancelled_by_driver';
       finalPrice?: number;
       driverNotes?: string;
+      passengerNote?: string;
+      bargainPrice?: number;
     },
   ) {
     return await this.busService.updateHireRequestStatus(
@@ -282,6 +287,8 @@ export class BusController {
       body.status,
       body.finalPrice,
       body.driverNotes,
+      body.passengerNote,
+      body.bargainPrice,
     );
   }
 
